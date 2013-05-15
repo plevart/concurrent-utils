@@ -74,9 +74,9 @@ public class OrderedTaskWrapper<K> {
             // external invocation of run() TRIGGERS 'this' OrderedTask
             if (State.FIRST == state.getAndSet(State.TRIGGERED)) {
                 // only proceed with execution if 'this' was FIRST in chain
-                for (OrderedTask ot = this; ot != null; ) {
+                for (OrderedTask ordered = this; ordered != null; ) {
                     try {
-                        ot.task.run();
+                        ordered.task.run();
                     }
                     catch (Throwable t) {
                         if (throwable == null) {
@@ -90,19 +90,19 @@ public class OrderedTaskWrapper<K> {
                         }
                     }
                     finally {
-                        if (lastTasksMap.remove(key, ot)) {
-                            // 'ot' was last in chain -> terminate loop
-                            ot = null;
+                        if (lastTasksMap.remove(key, ordered)) {
+                            // 'ordered' was last in chain -> terminate loop
+                            ordered = null;
                         }
                         else {
-                            // 'ot' was not last in chain -> take next
-                            ot = takeUninterruptibly(ot.next);
-                            // make next 'ot' FIRST in chain to allow possible
-                            // external invocation of ot.run() to execute it...
-                            if (State.TRIGGERED != ot.state.getAndSet(State.FIRST)) {
-                                // only proceed with execution of in this loop if 'ot' was already TRIGGERED
-                                // else terminate loop and let future external invocation of ot.run() execute it
-                                ot = null;
+                            // 'ordered' was not last in chain -> take next
+                            ordered = takeUninterruptibly(ordered.next);
+                            // make next 'ordered' FIRST in chain to allow possible
+                            // external invocation of ordered.run() to execute it...
+                            if (State.TRIGGERED != ordered.state.getAndSet(State.FIRST)) {
+                                // only proceed with execution in this loop if 'ordered' was already TRIGGERED
+                                // else terminate loop and let future external invocation of ordered.run() execute it
+                                ordered = null;
                             }
                         }
                     }
@@ -123,6 +123,9 @@ public class OrderedTaskWrapper<K> {
         }
     }
 
+    /**
+     * {@link BlockingQueue#put} ignoring interrupts.
+     */
     static <T> void putUninterruptibly(BlockingQueue<T> queue, T element) {
         boolean interrupted = false;
         try {
@@ -144,6 +147,9 @@ public class OrderedTaskWrapper<K> {
         }
     }
 
+    /**
+     * {@link BlockingQueue#take} ignoring interrupts.
+     */
     static <T> T takeUninterruptibly(BlockingQueue<T> queue) {
         boolean interrupted = false;
         try {
