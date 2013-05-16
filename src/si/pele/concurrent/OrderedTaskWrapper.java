@@ -41,10 +41,8 @@ public class OrderedTaskWrapper<K> {
         OrderedTask lastTask = lastTasksMap.put(key, newTask);
         if (lastTask != null) {
             // last task not finished yet -> link new task to the chain
-            // this should never block since at most one element is enqueue-ed in each
-            // {@link OrderedTask#next} queue
-            newTask.state.set(State.CHAINED);
-            putUninterruptibly(lastTask.next, newTask);
+            // NOTE 1: when lastTask is executed it will spin-wait for next to be set
+            lastTask.next = newTask;
         }
         else {
             // last task already finished -> new task is now first in (new) chain
@@ -66,8 +64,8 @@ public class OrderedTaskWrapper<K> {
     private final class OrderedTask implements Runnable {
         private final Runnable task;
         private final K key;
-        final AtomicReference<State> state = new AtomicReference<>();
-        final BlockingQueue<OrderedTask> next = new ArrayBlockingQueue<>(1);
+        final AtomicReference<State> state = new AtomicReference<>(State.CHAINED); // default is CHAINED
+        volatile OrderedTask next;
         private Throwable throwable;
 
         OrderedTask(Runnable task, K key) {
@@ -102,12 +100,21 @@ public class OrderedTaskWrapper<K> {
                         }
                         else {
                             // 'ordered' was not last in chain -> take next
-                            ordered = takeUninterruptibly(ordered.next);
-                            // make next 'ordered' FIRST in chain to allow possible
-                            // external invocation of ordered.run() to execute it...
-                            if (State.TRIGGERED != ordered.state.getAndSet(State.FIRST)) {
-                                // only proceed with execution in this loop if 'ordered' was already TRIGGERED
-                                // else terminate loop and let future external invocation of ordered.run() execute it
+                            OrderedTask next;
+                            while ((next = ordered.next) == null) {
+                                // spin-wait for next to be set by a thread in wrap() method (see NOTE 1)
+                                // (testing shows that in practice this loop never spins)
+                            }
+                            // mark 'next' as FIRST in chain to allow possible
+                            // external invocation of next.run() to execute it...
+                            if (State.TRIGGERED == next.state.getAndSet(State.FIRST)) {
+                                // if external invocation of next.run() already TRIGGERED 'next' task
+                                // then proceed with execution in this loop...
+                                ordered = next;
+                            }
+                            else {
+                                // ...else terminate loop and let future external invocation of next.run()
+                                // execute the task
                                 ordered = null;
                             }
                         }
@@ -129,56 +136,8 @@ public class OrderedTaskWrapper<K> {
         }
     }
 
-    /**
-     * {@link BlockingQueue#put} ignoring interrupts.
-     */
-    static <T> void putUninterruptibly(BlockingQueue<T> queue, T element) {
-        boolean interrupted = false;
-        try {
-            for (; ; ) {
-                try {
-                    queue.put(element);
-                    return;
-                }
-                catch (InterruptedException e) {
-                    interrupted = true;
-                }
-            }
-        }
-        finally {
-            // restore the interrupted status if InterruptedException has been thrown
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-    /**
-     * {@link BlockingQueue#take} ignoring interrupts.
-     */
-    static <T> T takeUninterruptibly(BlockingQueue<T> queue) {
-        boolean interrupted = false;
-        try {
-            for (; ; ) {
-                try {
-                    return queue.take();
-                }
-                catch (InterruptedException e) {
-                    interrupted = true;
-                }
-            }
-        }
-        finally {
-            // restore the interrupted status if InterruptedException has been thrown
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-
     // test
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
 
         class Task implements Runnable {
             final int key, seq;
@@ -194,6 +153,10 @@ public class OrderedTaskWrapper<K> {
                 for (int i = 0; i < key; i++) sb.append("        ");
                 sb.append(seq).append(" (").append(Thread.currentThread().getId()).append(')');
                 System.out.println(sb.toString());
+                try {
+                    Thread.sleep(10L);
+                }
+                catch (InterruptedException e) {}
             }
         }
 
@@ -207,13 +170,16 @@ public class OrderedTaskWrapper<K> {
             System.out.printf("%7d ", key);
         }
         System.out.println();
-        for (int key = 0; key < seq.length; key++) {
-            System.out.printf("------- ");
-        }
-        System.out.println();
-        for (int i = 0; i < 100; i++) {
-            int key = ThreadLocalRandom.current().nextInt(seq.length);
-            exec.execute(otw.wrap(new Task(key, seq[key]++), key));
+        for (int n = 0; n < 5; n++) {
+            for (int key = 0; key < seq.length; key++) {
+                System.out.printf("------- ");
+            }
+            System.out.println();
+            for (int i = 0; i < 100; i++) {
+                int key = ThreadLocalRandom.current().nextInt(seq.length);
+                exec.execute(otw.wrap(new Task(key, seq[key]++), key));
+            }
+            Thread.sleep(500L);
         }
 
         exec.shutdown();
