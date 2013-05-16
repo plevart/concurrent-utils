@@ -170,17 +170,15 @@ public class OrderedTaskWrapper<K> {
             System.out.printf("%7d ", key);
         }
         System.out.println();
-        for (int n = 0; n < 5; n++) {
-            for (int key = 0; key < seq.length; key++) {
-                System.out.printf("------- ");
-            }
-            System.out.println();
-            for (int i = 0; i < 100; i++) {
-                int key = ThreadLocalRandom.current().nextInt(seq.length);
-                exec.execute(otw.wrap(new Task(key, seq[key]++), key));
-            }
-            Thread.sleep(500L);
+        for (int key = 0; key < seq.length; key++) {
+            System.out.printf("------- ");
         }
+        System.out.println();
+        for (int i = 0; i < 100; i++) {
+            int key = ThreadLocalRandom.current().nextInt(seq.length);
+            exec.execute(otw.wrap(new Task(key, seq[key]++), key));
+        }
+        Thread.sleep(1000L);
 
         exec.shutdown();
     }
