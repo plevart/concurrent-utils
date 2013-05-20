@@ -11,18 +11,20 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
  * @author peter
  */
 public class Container {
-    private static final AtomicIntegerFieldUpdater<Container> state0Updater
-        = AtomicIntegerFieldUpdater.newUpdater(Container.class, "state0");
 
     // state0 (2 bits per lazy field, good for 1st 16 lazy fields - next 16 fields will have state1, etc...)
     private volatile int state0;
 
-    // lock for lazyVal initialization
-    private static final LazyLock<Container> lazyValLock
-        = new LazyLock<Container>(state0Updater, 0);
+    // CAS support for state0
+    private static final AtomicIntegerFieldUpdater<Container> state0Updater
+        = AtomicIntegerFieldUpdater.newUpdater(Container.class, "state0");
 
     // the lazy val field
     private int lazyVal;
+
+    // lock for lazyVal initialization
+    private static final LazyLock<Container> lazyValLock
+        = new LazyLock<Container>(state0Updater, 0);
 
     private int computeLazyVal() {
         // this is the expression used to initialize lazy val
@@ -83,7 +85,7 @@ public class Container {
         }
 
         {
-            System.out.println("\nTripple threaded initialization...");
+            System.out.println("\nTriple threaded initialization...");
             Container c = new Container();
             Runnable r = new Task(c);
             Thread t1 = new Thread(r, "t1");

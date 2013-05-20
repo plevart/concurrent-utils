@@ -33,7 +33,7 @@ public class LazyLock<T> {
             int state = stateUpdater.get(target);
             int myState = state & state3;
             if (myState == state3) {
-                // already initialized - not locking needed
+                // already initialized - no locking needed
                 return false;
             } else if (myState == state0) {
                 if (stateUpdater.compareAndSet(target, state, state + state1)) {
