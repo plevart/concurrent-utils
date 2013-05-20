@@ -1,7 +1,8 @@
 /*
- * Written by Peter Levart <peter.levart@gmail.com>
- * and released to the public domain, as explained at
- * http://creativecommons.org/publicdomain/zero/1.0/
+ * Copyright (C) 2013 Peter Levart
+ *
+ * This work is licensed under a Creative Commons Attribution 3.0 Unported License:
+ * http://creativecommons.org/licenses/by/3.0/
  */
 package si.pele.concurrent;
 
