@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * @author peter
  */
-public class TLChainEEW implements EnterExitWait {
+public class TLChainLazyExitEEW implements EnterExitWait {
 
     private final AtomicReference<Entry> first = new AtomicReference<>();
     private final ThreadLocal<Entry> tl = new ThreadLocal<Entry>() {
@@ -53,6 +53,10 @@ public class TLChainEEW implements EnterExitWait {
 
         volatile int in;
 
+        void setInLazy(int in) {
+            U.putOrderedInt(this, inOffset, in);
+        }
+
         // padding after 'in' to prevent cache-line false-sharing (128 bytes)
         private int
             _40, _41, _42, _43, _44, _45, _46, _47,
@@ -64,12 +68,14 @@ public class TLChainEEW implements EnterExitWait {
 
     @Override
     public void enter() {
+        // enter should be immediate
         tl.get().in = 1;
     }
 
     @Override
     public void exit() {
-        tl.get().in = 0;
+        // exit can be lazy
+        tl.get().setInLazy(0);
     }
 
     @Override

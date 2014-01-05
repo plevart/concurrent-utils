@@ -12,26 +12,27 @@ import java.util.function.Supplier;
  */
 public class LRTest implements Runnable {
 
-    public static void main(String[] args) {
-        System.out.println("Warm-up:");
-        System.out.print("Counter: ");
-        new LRTest(1024, 2, LongAdderEEW::new).run();
-        System.out.print("TLChain: ");
-        new LRTest(1024, 2, TLChainEEW::new).run();
+    @SuppressWarnings("unchecked")
+    private static Supplier<EnterExitWait>[] eewSuppliers = new Supplier[]{
+        TLChainLazyExitEEW::new, TLChainEEW::new, LongAdderEEW::new
+    };
 
-        System.out.println("\nMeasure:");
-        for (int rthreads = 1; rthreads <= Runtime.getRuntime().availableProcessors() - 2; rthreads++) {
-            System.out.print("Counter: ");
-            new LRTest(1024, rthreads, LongAdderEEW::new).run();
-            System.out.print("TLChain: ");
-            new LRTest(1024, rthreads, TLChainEEW::new).run();
+    public static void main(String[] args) {
+        System.out.println("\nWarm-up:\n");
+        for (Supplier<EnterExitWait> eewSupplier : eewSuppliers) {
+            System.out.println(eewSupplier.get().getClass().getSimpleName() + ":");
+            new LRTest(1024, 2, eewSupplier).run();
         }
-        System.out.println();
-        for (int rthreads = 1; rthreads <= Runtime.getRuntime().availableProcessors() - 2; rthreads++) {
-            System.out.print("Counter: ");
-            new LRTest(1024*1024, rthreads, LongAdderEEW::new).run();
-            System.out.print("TLChain: ");
-            new LRTest(1024*1024, rthreads, TLChainEEW::new).run();
+
+        System.out.println("\nMeasure:\n");
+        for (int n : new int[]{1024, 1024 * 1024}) {
+            for (int rthreads = 1; rthreads <= Runtime.getRuntime().availableProcessors() - 2; rthreads++) {
+                for (Supplier<EnterExitWait> eewSupplier : eewSuppliers) {
+                    System.out.println(eewSupplier.get().getClass().getSimpleName() + ":");
+                    new LRTest(n, rthreads, eewSupplier).run();
+                }
+            }
+            System.out.println();
         }
     }
 
