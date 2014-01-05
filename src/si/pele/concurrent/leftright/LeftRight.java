@@ -5,6 +5,15 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+/**
+ * Implementation of the basic "Left Right" algorithm described in paper:
+ *
+ *      <a href="http://sourceforge.net/projects/ccfreaks/files/papers/LeftRight/leftright-extended.pdf">Left-Right:
+ *      A Concurrency Control Technique with Wait-Free Population Oblivious Reads</a>
+ *
+ * by Pedro Ramalhete and Andreia Correia
+ *
+ */
 public class LeftRight<T> {
     private volatile T leftState;
     private volatile EnterExitWait leftReaders;
