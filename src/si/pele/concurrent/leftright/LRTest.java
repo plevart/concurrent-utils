@@ -12,12 +12,16 @@ import java.util.function.Supplier;
  */
 public class LRTest implements Runnable {
 
-    @SuppressWarnings("unchecked")
-    private static Supplier<EnterExitWait>[] eewSuppliers = new Supplier[]{
-        TLChainLazyExitEEW::new, TLChainEEW::new, LongAdderEEW::new
-    };
-
     public static void main(String[] args) {
+        @SuppressWarnings("unchecked")
+        Supplier<EnterExitWait>[] eewSuppliers = new Supplier[]{
+            TLChainEEW::new,
+            TLChainVolatileEEW::new,
+            LongAdderEEW::new
+        };
+
+        int[] ns = {128, 1024, 1024 * 1024};
+
         System.out.println("\nWarm-up:\n");
         for (Supplier<EnterExitWait> eewSupplier : eewSuppliers) {
             System.out.println(eewSupplier.get().getClass().getSimpleName() + ":");
@@ -25,7 +29,7 @@ public class LRTest implements Runnable {
         }
 
         System.out.println("\nMeasure:\n");
-        for (int n : new int[]{1024, 1024 * 1024}) {
+        for (int n : ns) {
             for (int rthreads = 1; rthreads <= Runtime.getRuntime().availableProcessors() - 2; rthreads++) {
                 for (Supplier<EnterExitWait> eewSupplier : eewSuppliers) {
                     System.out.println(eewSupplier.get().getClass().getSimpleName() + ":");
@@ -42,7 +46,7 @@ public class LRTest implements Runnable {
     final Integer[] elements;
     final LeftRight<Set<Integer>> lrSet;
 
-    public LRTest(int n, int readerThreads, Supplier<EnterExitWait> eeweSupplier) {
+    public LRTest(int n, int readerThreads, Supplier<EnterExitWait> eewSupplier) {
         n &= ~7; // ensure n is dividable by 8
         this.n = n;
         this.quarter = n >> 2;
@@ -53,7 +57,7 @@ public class LRTest implements Runnable {
         }
         elements = uniqueElements.toArray(new Integer[n]);
         // create lrSet
-        lrSet = new LeftRight<Set<Integer>>(new TreeSet<>(), eeweSupplier.get(), new TreeSet<>(), eeweSupplier.get());
+        lrSet = new LeftRight<Set<Integer>>(new HashSet<>(), eewSupplier.get(), new HashSet<>(), eewSupplier.get());
         // pre-populate lrSet with 1/4th of elements
         lrSet.modify(
             set -> {
@@ -209,7 +213,8 @@ public class LRTest implements Runnable {
             while (latch.get() == 0L) {
                 Integer eRemove = elements[iRemove];
                 Integer eAdd = elements[iAdd];
-                if ((iRemove += 2) >= elements.length) iRemove -= elements.length;
+                if ((iRemove += 2) >= elements.length)
+                    iRemove -= elements.length;
                 if ((iAdd += 2) >= elements.length) iAdd -= elements.length;
                 lrSet.modify(eRemove, (e, set) -> set.remove(e));
                 lrSet.modify(eAdd, (e, set) -> set.add(e));
@@ -220,7 +225,8 @@ public class LRTest implements Runnable {
             while (latch.get() == 1L) {
                 Integer eRemove = elements[iRemove];
                 Integer eAdd = elements[iAdd];
-                if ((iRemove += 2) >= elements.length) iRemove -= elements.length;
+                if ((iRemove += 2) >= elements.length)
+                    iRemove -= elements.length;
                 if ((iAdd += 2) >= elements.length) iAdd -= elements.length;
                 lrSet.modify(eRemove, (e, set) -> set.remove(e));
                 lrSet.modify(eAdd, (e, set) -> set.add(e));
@@ -232,7 +238,8 @@ public class LRTest implements Runnable {
             while (latch.get() == 2L) {
                 Integer eRemove = elements[iRemove];
                 Integer eAdd = elements[iAdd];
-                if ((iRemove += 2) >= elements.length) iRemove -= elements.length;
+                if ((iRemove += 2) >= elements.length)
+                    iRemove -= elements.length;
                 if ((iAdd += 2) >= elements.length) iAdd -= elements.length;
                 lrSet.modify(eRemove, (e, set) -> set.remove(e));
                 lrSet.modify(eAdd, (e, set) -> set.add(e));
