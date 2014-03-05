@@ -12,6 +12,9 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 
 /**
+ * A reentrant mutual exclusion {@link Lock} implementation based solely
+ * on Java Object monitor locks.
+ *
  * @author peter.levart@gmail.com
  */
 public class MonitorReentrantLock implements Lock {
@@ -164,6 +167,13 @@ public class MonitorReentrantLock implements Lock {
         }
     }
 
+    synchronized void checkLock() {
+        if (owner != Thread.currentThread()) {
+            throw new IllegalMonitorStateException("Current owner is: " + owner +
+                                                   ", not: " + Thread.currentThread());
+        }
+    }
+
     private class Cond implements Condition {
 
         @Override
@@ -222,17 +232,33 @@ public class MonitorReentrantLock implements Lock {
 
         @Override
         public boolean awaitUntil(Date deadline) throws InterruptedException {
-            return false;  //To change body of implemented methods use File | Settings | File Templates.
+            int lockCount = 0;
+            try {
+                synchronized (this) {
+                    lockCount = releaseLock();
+                    long millis = deadline.getTime() - System.currentTimeMillis();
+                    if (millis <= 0) {
+                        return false;
+                    } else {
+                        wait(millis);
+                        return deadline.getTime() > System.currentTimeMillis();
+                    }
+                }
+            } finally {
+                if (lockCount > 0) regainLock(lockCount);
+            }
         }
 
         @Override
-        public void signal() {
-            //To change body of implemented methods use File | Settings | File Templates.
+        public synchronized void signal() {
+            checkLock();
+            notify();
         }
 
         @Override
-        public void signalAll() {
-            //To change body of implemented methods use File | Settings | File Templates.
+        public synchronized void signalAll() {
+            checkLock();
+            notifyAll();
         }
     }
 }
