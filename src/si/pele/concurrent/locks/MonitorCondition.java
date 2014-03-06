@@ -112,7 +112,7 @@ class MonitorCondition implements Condition {
 
 
     /**
-     * A package-private "interface" between {@link si.pele.concurrent.locks.MonitorCondition} and
+     * A package-private "interface" between {@link MonitorCondition} and
      * re-entrant {@link Lock} implementations.
      *
      * @author peter.levart@gmail.com
@@ -132,9 +132,8 @@ class MonitorCondition implements Condition {
 
         /**
          * @param lockCount nested lock count
-         * @throws IllegalMonitorStateException if current thread is not owner of the lock
          */
-        abstract void regainLock(int lockCount) throws IllegalMonitorStateException;
+        abstract void regainLock(int lockCount);
 
         /**
          * @throws IllegalMonitorStateException if current thread is not owner of the lock
