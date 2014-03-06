@@ -9,19 +9,19 @@ package si.pele.concurrent.locks;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
-import java.util.Date;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * A reentrant mutual exclusion {@link java.util.concurrent.locks.Lock} implementation based on
- * Unsafe CAS opreration and Java Object monitor locks.
+ * A re-entrant mutual exclusion {@link Lock} implementation based on
+ * mixed usage of atomic operations (for basic {@link Lock} API) and Java Object monitor locks
+ * (for {@link Condition} API).
  *
  * @author peter.levart@gmail.com
  */
-public class HybridReentrantLock implements Lock {
+public class HybridReentrantLock extends MonitorCondition.Support implements Lock {
 
     private volatile Thread owner;
 
@@ -39,7 +39,7 @@ public class HybridReentrantLock implements Lock {
             this.thread = thread;
         }
 
-        boolean casNext(Waiter oldNext, Waiter newNext) {
+        final boolean casNext(Waiter oldNext, Waiter newNext) {
             return U.compareAndSwapObject(this, WAITER_NEXT_OFFSET, oldNext, newNext);
         }
     }
@@ -51,11 +51,11 @@ public class HybridReentrantLock implements Lock {
         return U.compareAndSwapObject(this, HEAD_OFFSET, oldHead, newHead);
     }
 
-    // eventual tail of waiters list
+    // eventual cached tail of waiters list
     // (optimization so that we don't traverse the whole list on each push)
     private volatile Waiter tail;
 
-    // a sentinel waiter put on tail of invalidated chain
+    // a sentinel Waiter value put on tail of invalidated chain
     private static final Waiter INVALIDATED = new Waiter(null);
 
     // internal implementation
@@ -93,6 +93,8 @@ public class HybridReentrantLock implements Lock {
     public void lock() {
         Thread ct = Thread.currentThread();
         Waiter waiter = null;
+        boolean interrupted = false;
+
         while (true) {
             Thread ot = owner;
             if (ot == null) {
@@ -112,41 +114,96 @@ public class HybridReentrantLock implements Lock {
                 break;
             } else if (waiter == null) {
                 waiter = pushWaiter(ct);
-                // re-try locking after pushing waiter on the list so that we don't miss a signal
+                // re-try locking after pushing waiter on the list and before parking because
+                // we may have missed a signal...
             } else {
                 LockSupport.park(this);
+                // clear and remember interrupted status because we may park again later...
+                interrupted |= Thread.interrupted();
             }
+        }
+
+        if (interrupted) {
+            // set interrupted status if it was cleared before
+            Thread.currentThread().interrupt();
         }
     }
 
     @Override
-    public synchronized void lockInterruptibly() throws InterruptedException {
+    public void lockInterruptibly() throws InterruptedException {
+        Thread ct = Thread.currentThread();
+        Waiter waiter = null;
+        boolean interrupted = false;
+
         while (true) {
-            if (owner == null) {
-                owner = Thread.currentThread();
-                lockCount = 1;
-                break;
-            } else if (owner == Thread.currentThread()) {
+            Thread ot = owner;
+            if (ot == null) {
+                if (casOwner(null, ct)) {
+                    lockCount = 1;
+                    if (waiter != null) {
+                        // invalidate waiter entry so we don't consume any more signals
+                        // TODO: proper synchronization with signal()
+                        waiter.thread = null;
+                        // waiter = null; // don't really need this since we are exiting the method anyway
+                    }
+                    break;
+                }
+            } else if (ot == ct) {
+                // nested lock
                 lockCount++;
+                assert waiter == null;
                 break;
+            } else if (interrupted) {
+                // we already de-registered from waiters list before re-trying the lock
+                assert waiter == null;
+                // interrupted = false; // don't really need this since we are exiting the method anyway
+                throw new InterruptedException();
+            } else if (waiter == null) {
+                waiter = pushWaiter(ct);
+                // re-try locking after pushing waiter on the list and before parking because
+                // we may have missed a signal...
             } else {
-                wait();
+                assert !interrupted && waiter != null;
+                // no interrupted status pending yet, so we park...
+                LockSupport.park(this);
+                // clear and remember interrupted status but re-try locking after first
+                // de-registering from waiters list so that we don't attract and consume a signal
+                // but throw InterruptedException...
+                interrupted = Thread.interrupted();
+                if (interrupted && waiter != null) {
+                    // de-register from waiters list so we don't consume any more signals
+                    // before re-trying the lock
+                    // TODO: proper synchronization with signal()
+                    waiter.thread = null;
+                    waiter = null;
+                    // we are about to obtain the lock or throw InterruptedException on next
+                    // iteration...
+                }
             }
+        }
+
+        if (interrupted) {
+            // set interrupted status if it was cleared before and we nevertheless
+            // obtained the lock...
+            Thread.currentThread().interrupt();
         }
     }
 
     @Override
     public synchronized boolean tryLock() {
-        if (owner == null) {
-            owner = Thread.currentThread();
-            lockCount = 1;
-            return true;
-        } else if (owner == Thread.currentThread()) {
+        Thread ct = Thread.currentThread();
+        Thread ot = owner;
+        if (ot == null) {
+            if (casOwner(null, ct)) {
+                lockCount = 1;
+                return true;
+            }
+        } else if (ot == ct) {
+            // nested lock
             lockCount++;
             return true;
-        } else {
-            return false;
         }
+        return false;
     }
 
     @Override
@@ -174,17 +231,6 @@ public class HybridReentrantLock implements Lock {
         }
     }
 
-    /**
-     * Attempts to release this lock.
-     * <p/>
-     * <p>If the current thread is the holder of this lock then the hold
-     * count is decremented.  If the hold count is now zero then the lock
-     * is released.  If the current thread is not the holder of this
-     * lock then {@link IllegalMonitorStateException} is thrown.
-     *
-     * @throws IllegalMonitorStateException if the current thread does not
-     *                                      hold this lock
-     */
     @Override
     public synchronized void unlock() {
         if (owner == Thread.currentThread()) {
@@ -198,12 +244,7 @@ public class HybridReentrantLock implements Lock {
         }
     }
 
-    @Override
-    public Condition newCondition() {
-        return new Cond();
-    }
-
-    // internal implementation
+    // MonitorCondition.Support implementation
 
     synchronized int releaseLock() {
         if (this.owner == Thread.currentThread()) {
@@ -247,98 +288,10 @@ public class HybridReentrantLock implements Lock {
         }
     }
 
-    private class Cond implements Condition {
+    // Unsafe support (used in nested classes too, so package-private to avoid generated accessor methods)
 
-        @Override
-        public void await() throws InterruptedException {
-            int lockCount = 0;
-            try {
-                synchronized (this) {
-                    lockCount = releaseLock();
-                    wait();
-                }
-            } finally {
-                if (lockCount > 0) regainLock(lockCount);
-            }
-        }
-
-        @Override
-        public void awaitUninterruptibly() {
-            int lockCount = 0;
-            boolean interrupted = false;
-            try {
-                synchronized (this) {
-                    lockCount = releaseLock();
-                    try {
-                        wait();
-                    } catch (InterruptedException e) {
-                        interrupted = true;
-                    }
-                }
-            } finally {
-                if (lockCount > 0) regainLock(lockCount);
-                if (interrupted) Thread.currentThread().interrupt();
-            }
-        }
-
-        @Override
-        public long awaitNanos(long nanosTimeout) throws InterruptedException {
-            long deadline = System.nanoTime() + nanosTimeout;
-            int lockCount = 0;
-            try {
-                synchronized (this) {
-                    lockCount = releaseLock();
-                    long millis = nanosTimeout / 1000_000L;
-                    long nanos = nanosTimeout - millis * 1000_000L;
-                    wait(millis, (int) nanos);
-                }
-            } finally {
-                if (lockCount > 0) regainLock(lockCount);
-                return deadline - System.nanoTime();
-            }
-        }
-
-        @Override
-        public boolean await(long time, TimeUnit unit) throws InterruptedException {
-            return awaitNanos(unit.toNanos(time)) > 0;
-        }
-
-        @Override
-        public boolean awaitUntil(Date deadline) throws InterruptedException {
-            int lockCount = 0;
-            try {
-                synchronized (this) {
-                    lockCount = releaseLock();
-                    long millis = deadline.getTime() - System.currentTimeMillis();
-                    if (millis <= 0) {
-                        return false;
-                    } else {
-                        wait(millis);
-                        return deadline.getTime() > System.currentTimeMillis();
-                    }
-                }
-            } finally {
-                if (lockCount > 0) regainLock(lockCount);
-            }
-        }
-
-        @Override
-        public synchronized void signal() {
-            checkLock();
-            notify();
-        }
-
-        @Override
-        public synchronized void signalAll() {
-            checkLock();
-            notifyAll();
-        }
-    }
-
-    // Unsafe support
-
-    private static final Unsafe U;
-    private static final long OWNER_OFFSET, HEAD_OFFSET, WAITER_NEXT_OFFSET;
+    static final Unsafe U;
+    static final long OWNER_OFFSET, HEAD_OFFSET, WAITER_NEXT_OFFSET;
 
     static {
         try {
