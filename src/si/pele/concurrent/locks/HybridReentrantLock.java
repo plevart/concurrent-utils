@@ -35,24 +35,25 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
 
     /**
      * FIFO linked list of threads waiting on lock:
-     *
+     * <p/>
      * head -> Waiter.next -> Waiter.next -> ... -> Waiter.next -> null
-     *                                              ^
-     *                                        tail--
-     *
+     * ^
+     * tail--
+     * <p/>
      * Waiter.thread is initialized with waiting thread before linking the
-     * node at the end of the chain, but can be reset
+     * node to the end of the chain. It can be reset
      * to null later if the waiting thread is interrupted or times out.
-     *
-     * The 'tail' points to eventual tail of linked list (last node), but
-     * can point to some node not far from real tail.
-     *
-     * The INVALIDATED sentinel value is appended to the tail when the chain
-     * is invalidated. That happens when the last element is popped of the
-     * head of the list. The 'head' is then reset to null.
+     * <p/>
+     * The 'tail' points to eventual last node of linked list.
+     * It can happen (because of race) that it points to some node not far
+     * from last node.
+     * <p/>
+     * The INVALIDATED sentinel value is appended to the end of list when
+     * the chain is invalidated. That happens when the last element is popped
+     * from the head of the list. The 'head' is reset to null in this case.
      */
     private static class Waiter {
-        // a sentinel value put on tail of invalidated chain
+        // a sentinel value put on the end of invalidated chain
         static final Waiter INVALIDATED = new Waiter();
 
         volatile Thread thread;
@@ -62,7 +63,7 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
         }
 
         Waiter(Thread thread) {
-            // need not be a volatile write since we publish Waiters safely
+            // need not be a volatile write (we publish Waiters safely)
             U.putOrderedObject(this, WAITER_THREAD_OFFSET, thread);
         }
 
@@ -137,7 +138,7 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                         // chain as invalidated (pushing threads will re-try when this
                         // sentinel is found at the end of the chain)
                         if (w.casNext(null, Waiter.INVALIDATED)) {
-                            // set tail to INVALIDATED too (this is not strictly necessary since
+                            // set 'tail' to INVALIDATED too (this is not strictly necessary since
                             // pushing threads will eventually overwrite the tail that belongs to
                             // invalidated chain with some valid node, but there might not be any
                             // push in the near future and we want to release any reference to Thread
@@ -151,10 +152,12 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                             break;
                         }
                     } else {
-                        // in case the chain is non-empty, we just relink the head
-                        if (casHead(h, n)) {
-                            break;
-                        }
+                        // in case the chain is non-empty, we just set the head
+                        // (reminder: popWaiter is only called by the thread holding
+                        // the lock and when head is found != null, pushing threads are not updating it
+                        // ant more, so no CAS is needed here)
+                        head = n;
+                        break;
                     }
                 }
             }
@@ -180,7 +183,6 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     lockCount = 1;
                     if (waiter != null) {
                         // invalidate waiter entry so we don't consume any more signals
-                        // TODO: proper synchronization with signal()
                         waiter.thread = null;
                     }
                     break;
@@ -220,7 +222,6 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     lockCount = 1;
                     if (waiter != null) {
                         // invalidate waiter entry so we don't consume any more signals
-                        // TODO: proper synchronization with signal()
                         waiter.thread = null;
                         // waiter = null; // don't really need this since we are exiting the method anyway
                     }
@@ -251,7 +252,6 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                 if (interrupted && waiter != null) {
                     // de-register from waiters list so we don't consume any more signals
                     // before re-trying the lock
-                    // TODO: proper synchronization with signal()
                     waiter.thread = null;
                     waiter = null;
                     // we are about to obtain the lock or throw InterruptedException on next
@@ -341,7 +341,6 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                 if ((interrupted | timedOut) && waiter != null) {
                     // de-register from waiters list so we don't consume any more signals
                     // before re-trying the lock
-                    // TODO: proper synchronization with signal()
                     waiter.thread = null;
                     waiter = null;
                     // we are about to obtain the lock or throw InterruptedException or time-out on next
@@ -353,7 +352,6 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
         if (waiter != null) {
             assert !timedOut;
             // de-register from waiters list so we don't consume any more signals
-            // TODO: proper synchronization with signal()
             waiter.thread = null;
         }
 
@@ -389,42 +387,63 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
 
     // MonitorCondition.Support implementation
 
-    synchronized int releaseLock() {
-        if (this.owner == Thread.currentThread()) {
-            int lockCount = this.lockCount;
-            assert lockCount > 0;
-            this.owner = null;
-            this.lockCount = 0;
-            this.notify();
-            return lockCount;
+    int releaseLock() {
+        Thread ct = Thread.currentThread();
+        Thread ot = owner;
+        if (ot == ct) {
+            // 1st take the sample of lockCount and reset it
+            int lc = lockCount;
+            lockCount = 0;
+            // then release the lock
+            owner = null;
+            // then attempt to unpark the 1st waiter (if there is one)
+            Thread t = popWaiter();
+            if (t != null) {
+                LockSupport.unpark(t);
+            }
+            // return lock count
+            return lc;
         } else {
-            throw new IllegalMonitorStateException("Current owner is: " + owner +
-                                                   ", not: " + Thread.currentThread());
+            throw new IllegalMonitorStateException("Current owner is: " + ot +
+                                                   ", not: " + ct);
         }
     }
 
-    synchronized void regainLock(int lockCount) {
+    void regainLock(int lockCount) {
         assert lockCount > 0;
+        Thread ct = Thread.currentThread();
+        Waiter waiter = null;
         boolean interrupted = false;
+
         while (true) {
-            if (owner == null) {
-                this.owner = Thread.currentThread();
-                this.lockCount = lockCount;
-                break;
-            } else {
-                try {
-                    wait();
-                } catch (InterruptedException e) {
-                    interrupted = true;
+            Thread ot = owner;
+            if (ot == null) {
+                if (casOwner(null, ct)) {
+                    this.lockCount = lockCount;
+                    if (waiter != null) {
+                        // invalidate waiter entry so we don't consume any more signals
+                        waiter.thread = null;
+                    }
+                    break;
                 }
+            } else if (waiter == null) {
+                waiter = pushWaiter(ct);
+                // re-try locking after pushing waiter on the list and before parking because
+                // we may have missed a signal...
+            } else {
+                LockSupport.park(this);
+                // clear and remember interrupted status because we may park again later...
+                interrupted |= Thread.interrupted();
             }
         }
+
         if (interrupted) {
+            // set interrupted status if it was cleared before
             Thread.currentThread().interrupt();
         }
     }
 
-    synchronized void checkLock() {
+    void checkLock() {
         if (owner != Thread.currentThread()) {
             throw new IllegalMonitorStateException("Current owner is: " + owner +
                                                    ", not: " + Thread.currentThread());

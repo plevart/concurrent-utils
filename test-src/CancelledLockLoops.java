@@ -41,6 +41,7 @@
  * msecs to complete.
  */
 
+import si.pele.concurrent.locks.HybridReentrantLock;
 import si.pele.concurrent.locks.MonitorReentrantLock;
 
 import java.util.concurrent.*;
@@ -58,8 +59,9 @@ public final class CancelledLockLoops {
         print = true;
 
         List<Class<? extends Lock>> lockClasses = Arrays.asList(
+            MonitorReentrantLock.class,
             ReentrantLock.class,
-            MonitorReentrantLock.class
+            HybridReentrantLock.class
         );
 
         for (Class<? extends Lock> lockClass : lockClasses) {

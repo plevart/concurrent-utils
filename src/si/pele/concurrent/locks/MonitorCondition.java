@@ -125,17 +125,23 @@ class MonitorCondition implements Condition {
         }
 
         /**
+         * Release the lock and return the nested lock count.
+         *
          * @return nested lock count
          * @throws IllegalMonitorStateException if current thread is not owner of the lock
          */
         abstract int releaseLock() throws IllegalMonitorStateException;
 
         /**
+         * Re-gain the lock with given nested lock count.
+         *
          * @param lockCount nested lock count
          */
         abstract void regainLock(int lockCount);
 
         /**
+         * Check that current thread is holding the lock.
+         *
          * @throws IllegalMonitorStateException if current thread is not owner of the lock
          */
         abstract void checkLock() throws IllegalMonitorStateException;
