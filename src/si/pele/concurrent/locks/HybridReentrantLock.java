@@ -125,46 +125,45 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
             // skip de-registered (interrupted and/or timed-out) waiters
             Waiter w = h;
             Waiter n;
-            do {
+            while (true) {
                 t = w.thread;
-                if (t == null && (n = w.next) != null) {
+                n = w.next;
+                if (t == null && n != null) {
                     w = n;
+                } else {
+                    break;
                 }
-            } while (t == null && n != null);
-            // have we got a waiting victim?
-            if (t != null) {
-                assert w != null;
-                // yes -> shorten the chain
-                while (true) {
-                    Waiter n = w.next;
-                    if (n == null) {
-                        // in case new chain is now empty, we must 1st attempt
-                        // to append an INVALIDATED sentinel node to atomically declare the
-                        // chain as invalidated (pushing threads will re-try when this
-                        // sentinel is found at the end of the chain)
-                        if (w.casNext(null, Waiter.INVALIDATED)) {
-                            // set 'tail' to INVALIDATED too (this is not strictly necessary since
-                            // pushing threads will eventually overwrite the tail that belongs to
-                            // invalidated chain with some valid node, but there might not be any
-                            // push in the near future and we want to release any reference to Thread
-                            // as soon as possible...
-                            // (logically we could also set tail to null, but then we risk some pushing
-                            // thread would have to walk the whole chain from head to end until it finds
-                            // INVALIDATED sentinel)
-                            tail = Waiter.INVALIDATED;
-                            // finally reset head (allow pushing threads to create new head)
-                            head = null;
-                            break;
-                        }
-                    } else {
-                        // in case the chain is non-empty, we just set the head
-                        // (reminder: popWaiter is only called by the thread holding
-                        // the lock and when head is found != null, pushing threads are not updating it
-                        // ant more, so no CAS is needed here)
-                        head = n;
-                        break;
-                    }
+            }
+            // shorten the chain
+            if (n == null) {
+                // in case new chain is now empty, we must 1st attempt
+                // to append an INVALIDATED sentinel node to atomically declare the
+                // chain as invalidated (pushing threads will re-try when this
+                // sentinel is found at the end of the chain)
+                if (w.casNext(null, Waiter.INVALIDATED)) {
+                    // set 'tail' to INVALIDATED too (this is not strictly necessary since
+                    // pushing threads will eventually overwrite the tail that belongs to
+                    // invalidated chain with some valid node, but there might not be any
+                    // push in the near future and we want to release any reference to Thread
+                    // as soon as possible...
+                    // (logically we could also set tail to null, but then we risk some pushing
+                    // thread would have to walk the whole chain from head to end until it finds
+                    // INVALIDATED sentinel)
+                    tail = Waiter.INVALIDATED;
+                    // finally reset head (allow pushing threads to create new head)
+                    head = null;
+                } else {
+                    // some other pushing thread has appended new waiter at 'w.next' before we
+                    // managed to append INVALIDATED sentinel -> just set the 'head' to
+                    // this new waiter...
+                    head = w.next;
                 }
+            } else {
+                // in case the chain is non-empty, we just set the head
+                // (reminder: popWaiter is only called by the thread holding
+                // the lock and when head is found != null, pushing threads are not updating it
+                // any more, so no CAS is needed here)
+                head = n;
             }
         } else {
             t = null;
