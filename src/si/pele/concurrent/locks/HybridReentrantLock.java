@@ -46,11 +46,11 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
 
     /**
      * FIFO linked list of threads waiting on lock:
-     * <p/>
+     * <pre>
      * head -> Waiter.next -> Waiter.next -> ... -> Waiter.next -> null
-     * ^
-     * tail--
-     * <p/>
+     *                                              ^
+     *                                        tail--/
+     * <pre/>
      * Waiter.thread is initialized with waiting thread before linking the
      * node to the end of the chain. It can be reset
      * to null later if the waiting thread is interrupted or times out.
