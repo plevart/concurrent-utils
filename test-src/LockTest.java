@@ -7,6 +7,7 @@
 import si.pele.concurrent.locks.HybridReentrantLock;
 
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * @author peter
@@ -26,14 +27,18 @@ public class LockTest {
 //                    Thread.sleep(1000L);
 //                    log("Locking...");
                 for (int i = 0; i < 1000; i++) {
-                    lock.lock();
                     try {
-                        log("Locked");
+                        lock.lockInterruptibly();
+                        try {
+                            log("Locked");
 //                        log("Sleeping...");
 //                        Thread.sleep(1000L);
-                    } finally {
-                        lock.unlock();
-//                        log("Unlocked");
+                        } finally {
+                            lock.unlock();
+                            log("Unlocked");
+                        }
+                    } catch (InterruptedException e) {
+                        log(e.toString());
                     }
                 }
 //                } catch (InterruptedException e) {
@@ -47,12 +52,12 @@ public class LockTest {
         Lock lock = new HybridReentrantLock();
         Thread t1 = newThread(lock, "T1");
         Thread t2 = newThread(lock, "                                     T2");
-//        Thread t3 = newThread(lock, "                                                                          T3");
+        Thread t3 = newThread(lock, "                                                                          T3");
         t1.start();
         t2.start();
-//        t3.start();
+        t3.start();
         t1.join();
         t2.join();
-//        t3.join();
+        t3.join();
     }
 }

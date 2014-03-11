@@ -23,6 +23,17 @@ import java.util.concurrent.locks.LockSupport;
  */
 public class HybridReentrantLock extends MonitorCondition.Support implements Lock {
 
+    /**
+     * A sentinel value set on 'owner' before releasing the lock.
+     */
+    private static final Thread RELEASING = new Thread("RELEASING");
+
+    /**
+     * owner of the lock
+     * - null (the lock is not held by any thread)
+     * - some-thread (the lock is held by the thread)
+     * - RELEASING (the lock is in the transition from being held to be released)
+     */
     private volatile Thread owner;
 
     private boolean casOwner(Thread oldOwner, Thread newOwner) {
@@ -191,6 +202,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     }
                     break;
                 }
+            } else if (ot == RELEASING) {
+                // spin while the lock is being released...
             } else if (ot == ct) {
                 // nested lock
                 lockCount++;
@@ -236,6 +249,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     }
                     break;
                 }
+            } else if (ot == RELEASING) {
+                // spin while the lock is being released...
             } else if (ot == ct) {
                 // nested lock
                 lockCount++;
@@ -307,6 +322,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     timedOut = false;
                     break;
                 }
+            } else if (ot == RELEASING) {
+                // spin while the lock is being released...
             } else if (ot == ct) {
                 // nested lock (this is only possible on 1st loop iteration - we never retry nested lock)
                 assert waiter == null && !timedOut;
@@ -375,10 +392,12 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
         Thread ot = owner;
         if (ot == ct) {
             if (--lockCount == 0) {
-                // 1st release the lock
-                owner = null;
-                // then attempt to unpark the 1st waiter (if there is one)
+                // 1st transition to releasing state
+                owner = RELEASING;
+                // then pop the 1st waiter (if there is one)
                 Thread t = popWaiter();
+                // then release the lock
+                owner = null;
                 if (t != null) {
                     LockSupport.unpark(t);
                 }
@@ -400,10 +419,12 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
             // 1st take the sample of lockCount and reset it
             int lc = lockCount;
             lockCount = 0;
+            // 1st transition to releasing state
+            owner = RELEASING;
+            // then pop the 1st waiter (if there is one)
+            Thread t = popWaiter();
             // then release the lock
             owner = null;
-            // then attempt to unpark the 1st waiter (if there is one)
-            Thread t = popWaiter();
             if (t != null) {
                 LockSupport.unpark(t);
             }
@@ -434,14 +455,24 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     }
                     break;
                 }
+            } else if (ot == RELEASING) {
+                // spin while the lock is being released...
             } else if (waiter == null) {
                 waiter = pushWaiter(ct);
                 // re-try locking after pushing waiter on the list and before parking because
                 // we may have missed a signal...
             } else {
                 LockSupport.park(this);
-                // clear and remember interrupted status because we may park again later...
+                // clear and remember interrupted status but re-try locking after first
+                // de-registering from waiters list so that we don't attract and consume a signal
+                // but throw InterruptedException...
                 interrupted |= Thread.interrupted();
+                // de-register from waiters list so we don't consume any more signals
+                // before re-trying the lock
+                waiter.thread = null;
+                waiter = null;
+                // we are about to obtain the lock or throw InterruptedException
+                // or push us on waiters list again on next iteration...
             }
         }
 
