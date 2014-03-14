@@ -59,6 +59,10 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
 
         Waiter(Thread thread) {
             // need not be a volatile write (Waiters are published safely)
+            setThreadOrdered(thread);
+        }
+
+        final void setThreadOrdered(Thread thread) {
             U.putOrderedObject(this, WAITER_THREAD_OFFSET, thread);
         }
 
@@ -133,8 +137,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     }
                 } while (w != h);
 
-                // set current thread back (announcements for unparking clear it)
-                w.thread = ct;
+                // set current thread (announcement for unparking clears it)
+                w.setThreadOrdered(ct);
             }
 
             // got lock
@@ -163,8 +167,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                 while (w != h) {
                     h = head;
                 }
-                // set current thread back (announcements for unparking clear it)
-                w.thread = ct;
+                // set current thread (announcement for unparking clears it)
+                w.setThreadOrdered(ct);
                 // got lock
                 w.lockCount = 1;
                 return true;
@@ -234,8 +238,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                     }
                 } while (w != h);
 
-                // set current thread back (announcements for unparking clear it)
-                w.thread = ct;
+                // set current thread (announcement for unparking clears it)
+                w.setThreadOrdered(ct);
             }
 
             // got lock
@@ -326,7 +330,7 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                 }
 
                 // set current thread back (announcements for unparking clear it)
-                w.thread = ct;
+                w.setThreadOrdered(ct);
             }
 
             // got lock
