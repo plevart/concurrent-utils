@@ -84,175 +84,20 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
     // this is just optimization so that we don't traverse the whole list on each push
     private volatile Waiter tail;
 
-    /**
-     * Push {@code waiter} to the end of waiting list and return true if we
-     * managed to push on head (thus we got lock without contention) or
-     * false otherwise...
-     *
-     * @param h      the {@link #head} that has been read recently
-     *               (to avoid useless re-read)
-     * @param waiter {@link Waiter} to push to the end of linked list
-     * @return true if we got lock
-     */
-    private boolean pushWaiter(Waiter h, Waiter waiter) {
-
-        while (true) {
-            if (h == null) {
-                if (casHead(null, waiter)) {
-                    tail = waiter;
-                    return true;
-                }
-            } else {
-                Waiter t = tail;
-                if (t == null) {
-                    t = h;
-                }
-                for (Waiter w = t.next; t != Waiter.INVALIDATED; w = t.next) {
-                    if (w == null) {
-                        if (t.casNext(null, waiter)) {
-                            tail = waiter;
-                            return false;
-                        }
-                    } else {
-                        t = w;
-                    }
-                }
-            }
-            // re-read head before next iteration
-            h = head;
-        }
-    }
-
-    // pop will only be called by owner of the lock
-
-    private Thread popWaiter() {
-        Thread t;
-        Waiter h = head;
-        if (h != null) {
-            // skip de-registered (interrupted and/or timed-out) waiters
-            Waiter w = h;
-            Waiter n;
-            while (true) {
-                t = w.thread;
-                n = w.next;
-                if (t == null && n != null) {
-                    w = n;
-                } else {
-                    break;
-                }
-            }
-            // shorten the chain
-            if (n == null) {
-                // in case new chain is now empty, we must 1st attempt
-                // to append an INVALIDATED sentinel node to atomically declare the
-                // chain as invalidated (pushing threads will re-try when this
-                // sentinel is found at the end of the chain)
-                if (w.casNext(null, Waiter.INVALIDATED)) {
-                    // set 'tail' to INVALIDATED too (this is not strictly necessary since
-                    // pushing threads will eventually overwrite the tail that belongs to
-                    // invalidated chain with some valid node, but there might not be any
-                    // push in the near future and we want to release any reference to Thread
-                    // as soon as possible...
-                    // (logically we could also set tail to null, but then we risk some pushing
-                    // thread would have to walk the whole chain from head to end until it finds
-                    // INVALIDATED sentinel)
-                    tail = Waiter.INVALIDATED;
-                    // finally reset head (allow pushing threads to create new head)
-                    head = null;
-                } else {
-                    // some other pushing thread has appended new waiter at 'w.next' before we
-                    // managed to append INVALIDATED sentinel -> just set the 'head' to
-                    // this new waiter...
-                    head = w.next;
-                }
-            } else {
-                // in case the chain is non-empty, we just set the head
-                // (reminder: popWaiter is only called by the thread holding
-                // the lock and when head is found != null, pushing threads are not updating it
-                // any more, so no CAS is needed here)
-                head = n;
-            }
-        } else {
-            t = null;
-        }
-
-        return t;
-    }
-
-    private void popHeadWaiter(Waiter w) {
-        // assert w == head;
-        Waiter n = w.next;
-        if (n == null) {
-            // in case new chain is now empty, we must 1st attempt
-            // to append an INVALIDATED sentinel node to atomically declare the
-            // chain as invalidated (pushing threads will re-try when this
-            // sentinel is found at the end of the chain)
-            if (w.casNext(null, Waiter.INVALIDATED)) {
-                // set 'tail' to INVALIDATED too (this is not strictly necessary since
-                // pushing threads will eventually overwrite the tail that belongs to
-                // invalidated chain with some valid node, but there might not be any
-                // push in the near future and we want to release any reference to Thread
-                // as soon as possible...
-                // (logically we could also set tail to null, but then we risk some pushing
-                // thread would have to walk the whole chain from head to end until it finds
-                // INVALIDATED sentinel)
-                tail = Waiter.INVALIDATED;
-                // finally reset head (allow pushing threads to create new head)
-                head = null;
-            } else {
-                // some other pushing thread has appended new waiter at 'w.next' before we
-                // managed to append INVALIDATED sentinel -> just set the 'head' to
-                // this new waiter...
-                head = w.next;
-            }
-        } else {
-            // in case the chain is non-empty, we just set the head
-            // (reminder: popHeadWaiter is only called by the thread holding
-            // the lock and when head is found != null, pushing threads are not updating it
-            // any more, so no CAS is needed here)
-            head = n;
-        }
-    }
-
     // public API
 
     @Override
     public void lock() {
-        Thread ct = Thread.currentThread();
-        Waiter h = head;
-
-        if (h != null && ct == h.thread) {
-
-            // nested lock
-            h.lockCount++;
-
-        } else {
-
-            Waiter w = new Waiter(ct);
-            if (!pushWaiter(h, w)) {
-                // haven't got lock without contention...
-                boolean interrupted = false;
-                do {
-                    LockSupport.park();
-                    // re-read head after parking
-                    h = head;
-                    // clear interrupted status but remember it
-                    interrupted |= Thread.interrupted();
-                } while (w != h);
-
-                if (interrupted) {
-                    // set interrupted status if we were interrupted while parking
-                    Thread.currentThread().interrupt();
-                }
-            }
-
-            // got lock
-            w.lockCount = 1;
-        }
+        acquire(1);
     }
 
     @Override
     public void lockInterruptibly() throws InterruptedException {
+        // clear interrupted status and throw if it was true
+        if (Thread.interrupted()) {
+            throw new InterruptedException();
+        }
+
         Thread ct = Thread.currentThread();
         Waiter h = head;
 
@@ -277,8 +122,8 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                             throw new InterruptedException();
                         } else {
                             // the lock is just being released and we have already been
-                            // choosen as the next holder and an unpark has been issued
-                            // for us, so we just spin until we got the lock
+                            // chosen as the next holder and an unpark has/will be wasted
+                            // on us, so we just spin until we got the lock
                             while (w != h) {
                                 h = head;
                             }
@@ -287,6 +132,9 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
                         }
                     }
                 } while (w != h);
+
+                // set current thread back (announcements for unparking clear it)
+                w.thread = ct;
             }
 
             // got lock
@@ -297,221 +145,261 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
     @Override
     public boolean tryLock() {
         Thread ct = Thread.currentThread();
-        Thread ot = owner;
-        if (ot == null) {
-            if (casOwner(null, ct)) {
-                lockCount = 1;
+        Waiter h = head;
+
+        if (h == null) {
+            Waiter w = new Waiter(ct);
+            if (pushWaiter(h, w)) {
+                // got lock without contention
+                w.lockCount = 1;
+                return true;
+            } else if (w.casThread(ct, null)) {
+                // haven't got lock immediately but successfully unregistered
+                return false;
+            } else {
+                // the lock is just being released and we have already been
+                // chosen as the next holder and an unpark has/will be wasted
+                // on us, so we just spin until we got the lock
+                while (w != h) {
+                    h = head;
+                }
+                // set current thread back (announcements for unparking clear it)
+                w.thread = ct;
+                // got lock
+                w.lockCount = 1;
                 return true;
             }
-        } else if (ot == ct) {
+        } else if (ct == h.thread) {
             // nested lock
-            lockCount++;
+            h.lockCount++;
             return true;
+        } else {
+            return false;
         }
-        return false;
     }
 
     @Override
     public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
-        long deadline = System.nanoTime() + unit.toNanos(time);
-        Thread ct = Thread.currentThread();
-        int spinsLeft = MAX_SPINS_BEFORE_PARK;
-        Waiter waiter = null;
-        boolean interrupted = false;
-        boolean timedOut = false;
-
-        while (true) {
-            Thread ot = owner;
-            if (ot == null) {
-                if (casOwner(null, ct)) {
-                    lockCount = 1;
-                    // reset timedOut flag in case we timed out but obtained the lock nevertheless
-                    timedOut = false;
-                    // reset interrupted flag and set thread's interrupt status in case we were interrupted
-                    // but obtained the lock nevertheless
-                    if (interrupted) {
-                        interrupted = false;
-                        Thread.currentThread().interrupt();
-                    }
-                    break;
-                }
-            } else if (ot == RELEASING) {
-                // spin re-trying while lock is in the process of releasing
-            } else if (ot == ct) {
-                // nested lock (this is only possible on 1st loop iteration - we never retry nested lock)
-                // assert waiter == null && !timedOut;
-                lockCount++;
-                break;
-            } else if (spinsLeft > 0) {
-                // spin re-trying
-                spinsLeft--;
-            } else if (interrupted || timedOut) {
-                break;
-            } else if (waiter == null) {
-                if (time > 0L) {
-                    // we only need to register on the waiters list if timeout > 0
-                    waiter = pushWaiter(ct);
-                    // re-try locking after pushing waiter on the list and before parking because
-                    // we may have missed a signal...
-                } else {
-                    // time-out without waiting
-                    timedOut = true;
-                    break;
-                }
-            } else {
-                // assert !interrupted && !timedOut && waiter != null;
-                long nanos = deadline - System.nanoTime();
-                if (nanos > 0) {
-                    LockSupport.parkNanos(this, nanos);
-                } else {
-                    // timed-out
-                    timedOut = true;
-                }
-                // clear and remember interrupted status but re-try locking
-                interrupted = Thread.interrupted();
-                // remove us from waiting list before retrying locking if we were interrupted or we timed out
-                // so that we don't consume a signal and later throw InterruptedException or return false because
-                // we are not successful in obtaining the lock (for example someone else did it)
-                if (interrupted || timedOut) {
-                    waiter.thread = null;
-                    waiter = null;
-                }
-            }
-        }
-
-        if (waiter != null) {
-            // de-register from waiters list so we don't consume any more signals
-            waiter.thread = null;
-        }
-
-        if (interrupted) {
+        // clear interrupted status and throw if it was true
+        if (Thread.interrupted()) {
             throw new InterruptedException();
         }
 
-        return !timedOut;
+        long deadline = System.nanoTime() + unit.toNanos(time);
+
+        Thread ct = Thread.currentThread();
+        Waiter h = head;
+
+        if (h != null && ct == h.thread) {
+
+            // nested lock
+            h.lockCount++;
+
+        } else {
+
+            Waiter w = new Waiter(ct);
+            if (!pushWaiter(h, w)) {
+                // haven't got lock without contention...
+                do {
+                    long nanos = deadline - System.nanoTime();
+                    boolean timedOut = nanos <= 0L;
+                    if (!timedOut) {
+                        LockSupport.parkNanos(this, nanos);
+                        // re-read head after parking
+                        h = head;
+                    }
+                    // were we interrupted?
+                    boolean interrupted = Thread.interrupted();
+                    // or timed-out?
+                    if (interrupted || timedOut) {
+                        if (w.casThread(ct, null)) {
+                            // successfully unregistered from waiting list
+                            if (interrupted) {
+                                throw new InterruptedException();
+                            } else { // timed-out
+                                return false;
+                            }
+                        } else {
+                            // the lock is just being released and we have already been
+                            // chosen as the next holder and an unpark has/will be wasted
+                            // on us, so we just spin until we got the lock
+                            while (w != h) {
+                                h = head;
+                            }
+                            // set-back interrupted status
+                            if (interrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                    }
+                } while (w != h);
+
+                // set current thread back (announcements for unparking clear it)
+                w.thread = ct;
+            }
+
+            // got lock
+            w.lockCount = 1;
+        }
+
+        return true;
     }
 
     @Override
     public void unlock() {
+        release(true);
+    }
+
+    private int release(boolean nested) {
         Thread ct = Thread.currentThread();
-        Thread ot = owner;
-        if (ot == ct) {
-            if (--lockCount == 0) {
-                // 1st transition to releasing state
-                owner = RELEASING;
-                // then pop the 1st waiter (if there is one)
-                Thread t = popWaiter();
-                // then release the lock
-                owner = null;
-                if (t != null) {
-                    LockSupport.unpark(t);
+        Waiter w = head;
+        if (w != null && ct == w.thread) {
+            int lockDecrement = nested ? 1 : w.lockCount;
+            if ((w.lockCount -= lockDecrement) == 0) {
+                // find next live waiter and unpark it after transferring the lock to it
+                while (true) {
+                    Waiter n = w.next;
+                    if (n == null) {
+                        // no next waiter -> try to invalidate chain and reset head
+                        if (w.casNext(null, Waiter.INVALIDATED)) {
+                            // set 'tail' to INVALIDATED too; this is not strictly necessary since
+                            // pushing threads will eventually overwrite the tail that belongs to
+                            // invalidated chain with some valid node, but there might not be any
+                            // push in the near future and we want to release any reference to Thread
+                            // as soon as possible...
+                            // (logically we could also set tail to null, but then we risk some pushing
+                            // thread would have to walk the whole chain from head to end until it finds
+                            // INVALIDATED sentinel)
+                            tail = Waiter.INVALIDATED;
+                            // finally reset head (allow pushing threads to create new head)
+                            head = null;
+                            break;
+                        }
+                    } else {
+                        Thread nt = n.thread;
+                        if (nt != null && n.casThread(nt, null)) {
+                            // successfully found next waiting thread and announced unparking
+                            // by cas-ing thread from nt to null -> transfer lock to it
+                            head = n;
+                            // unpark it
+                            LockSupport.unpark(nt);
+                            break;
+                        } else {
+                            // try next in chain...
+                            w = n;
+                        }
+                    }
                 }
             }
+            return lockDecrement;
         } else {
-            throw new IllegalMonitorStateException(
-                "Current owner is: " + ot +
-                ", not: " + ct
-            );
+            throw new IllegalMonitorStateException("Not owner");
+        }
+    }
+
+    private void acquire(int lockIncrement) {
+        Thread ct = Thread.currentThread();
+        Waiter h = head;
+
+        if (h != null && ct == h.thread) {
+
+            // nested lock
+            h.lockCount += lockIncrement;
+
+        } else {
+
+            Waiter w = new Waiter(ct);
+            if (!pushWaiter(h, w)) {
+                // haven't got lock without contention...
+                boolean interrupted = false;
+                do {
+                    LockSupport.park();
+                    // re-read head after parking
+                    h = head;
+                    // clear interrupted status but remember it
+                    interrupted |= Thread.interrupted();
+                } while (w != h);
+
+                if (interrupted) {
+                    // set interrupted status if we were interrupted while parking
+                    Thread.currentThread().interrupt();
+                }
+
+                // set current thread back (announcements for unparking clear it)
+                w.thread = ct;
+            }
+
+            // got lock
+            w.lockCount = lockIncrement;
+        }
+    }
+
+    /**
+     * Push {@code waiter} to the end of waiting list and return true if we
+     * managed to push on head (thus we got lock without contention) or
+     * false otherwise...
+     *
+     * @param head   the {@link #head} that has been read recently
+     *               (to avoid useless re-read)
+     * @param waiter a {@link Waiter} to push to the end of linked list
+     * @return true if we got lock (we are at head)
+     */
+    private boolean pushWaiter(Waiter head, Waiter waiter) {
+
+        while (true) {
+            if (head == null) {
+                if (casHead(null, waiter)) {
+                    tail = waiter;
+                    return true;
+                }
+            } else {
+                Waiter t = tail;
+                if (t == null) {
+                    t = head;
+                }
+                for (Waiter w = t.next; t != Waiter.INVALIDATED; w = t.next) {
+                    if (w == null) {
+                        if (t.casNext(null, waiter)) {
+                            tail = waiter;
+                            return false;
+                        }
+                    } else {
+                        t = w;
+                    }
+                }
+            }
+            // re-read head before next iteration
+            head = this.head;
         }
     }
 
     // MonitorCondition.Support implementation
 
     int releaseLock() {
-        Thread ct = Thread.currentThread();
-        Thread ot = owner;
-        if (ot == ct) {
-            // 1st take the sample of lockCount and reset it
-            int lc = lockCount;
-            lockCount = 0;
-            // 1st transition to releasing state
-            owner = RELEASING;
-            // then pop the 1st waiter (if there is one)
-            Thread t = popWaiter();
-            // then release the lock
-            owner = null;
-            if (t != null) {
-                LockSupport.unpark(t);
-            }
-            // return lock count
-            return lc;
-        } else {
-            throw new IllegalMonitorStateException(
-                "Current owner is: " + ot +
-                ", not: " + ct
-            );
-        }
+        return release(false);
     }
 
     void regainLock(int lockCount) {
-        assert lockCount > 0;
-        Thread ct = Thread.currentThread();
-        int spinsLeft = MAX_SPINS_BEFORE_PARK;
-        Waiter waiter = null;
-        boolean interrupted = false;
-
-        while (true) {
-            Thread ot = owner;
-            if (ot == null) {
-                if (casOwner(null, ct)) {
-                    this.lockCount = lockCount;
-                    break;
-                }
-            } else if (ot == RELEASING) {
-                // spin re-trying while lock is in the process of releasing
-            } else if (spinsLeft > 0) {
-                // spin re-trying
-                spinsLeft--;
-            } else if (waiter == null) {
-                waiter = pushWaiter(ct);
-                // re-try locking after pushing waiter on the list and before parking because
-                // we may have missed a signal...
-            } else {
-                LockSupport.park(this);
-                // clear and remember interrupted status but re-try locking after first
-                // de-registering from waiters list so that we don't attract and consume a signal
-                // but throw InterruptedException...
-                interrupted |= Thread.interrupted();
-                // de-register from waiters list so we don't consume any more signals
-                // before re-trying the lock
-                waiter.thread = null;
-                waiter = null;
-                // we are about to obtain the lock or throw InterruptedException
-                // or push us on waiters list again on next iteration...
-            }
-        }
-
-        if (waiter != null) {
-            // de-register from waiters list so we don't consume any more signals
-            waiter.thread = null;
-        }
-
-        if (interrupted) {
-            // set interrupted status if we were interrupted while parking
-            Thread.currentThread().interrupt();
-        }
+        acquire(lockCount);
     }
 
     void checkLock() {
-        if (owner != Thread.currentThread()) {
-            throw new IllegalMonitorStateException(
-                "Current owner is: " + owner +
-                ", not: " + Thread.currentThread()
-            );
+        Waiter w = head;
+        if (w == null || Thread.currentThread() != w.thread) {
+            throw new IllegalMonitorStateException("Not owner");
         }
     }
 
     // Unsafe support (used in nested classes too, so package-private to avoid generated accessor methods)
 
     static final Unsafe U;
-    static final long OWNER_OFFSET, HEAD_OFFSET, WAITER_NEXT_OFFSET, WAITER_THREAD_OFFSET;
+    static final long HEAD_OFFSET, WAITER_NEXT_OFFSET, WAITER_THREAD_OFFSET;
 
     static {
         try {
             Field uf = Unsafe.class.getDeclaredField("theUnsafe");
             uf.setAccessible(true);
             U = (Unsafe) uf.get(null);
-            OWNER_OFFSET = U.objectFieldOffset(HybridReentrantLock.class.getDeclaredField("owner"));
             HEAD_OFFSET = U.objectFieldOffset(HybridReentrantLock.class.getDeclaredField("head"));
             WAITER_NEXT_OFFSET = U.objectFieldOffset(Waiter.class.getDeclaredField("next"));
             WAITER_THREAD_OFFSET = U.objectFieldOffset(Waiter.class.getDeclaredField("thread"));
