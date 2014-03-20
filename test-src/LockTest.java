@@ -4,10 +4,9 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-import si.pele.concurrent.locks.HybridReentrantLock;
+import si.pele.concurrent.locks.HybridReentrantLock1;
 
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * @author peter
@@ -49,7 +48,7 @@ public class LockTest {
     }
 
     public static void main(String[] args) throws InterruptedException {
-        Lock lock = new HybridReentrantLock();
+        Lock lock = new HybridReentrantLock1();
         Thread t1 = newThread(lock, "T1");
         Thread t2 = newThread(lock, "                                     T2");
         Thread t3 = newThread(lock, "                                                                          T3");

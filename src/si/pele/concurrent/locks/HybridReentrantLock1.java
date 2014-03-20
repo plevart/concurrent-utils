@@ -21,7 +21,7 @@ import java.util.concurrent.locks.LockSupport;
  *
  * @author peter.levart@gmail.com
  */
-public class HybridReentrantLock extends MonitorCondition.Support implements Lock {
+public class HybridReentrantLock1 extends MonitorCondition.Support implements Lock {
 
     /**
      * FIFO linked list of threads. The first one (head) has got the lock,
@@ -404,7 +404,7 @@ public class HybridReentrantLock extends MonitorCondition.Support implements Loc
             Field uf = Unsafe.class.getDeclaredField("theUnsafe");
             uf.setAccessible(true);
             U = (Unsafe) uf.get(null);
-            HEAD_OFFSET = U.objectFieldOffset(HybridReentrantLock.class.getDeclaredField("head"));
+            HEAD_OFFSET = U.objectFieldOffset(HybridReentrantLock1.class.getDeclaredField("head"));
             WAITER_NEXT_OFFSET = U.objectFieldOffset(Waiter.class.getDeclaredField("next"));
             WAITER_THREAD_OFFSET = U.objectFieldOffset(Waiter.class.getDeclaredField("thread"));
         } catch (IllegalAccessException | NoSuchFieldException e) {
