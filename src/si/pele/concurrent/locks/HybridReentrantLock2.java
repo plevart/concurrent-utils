@@ -280,8 +280,13 @@ public class HybridReentrantLock2 extends MonitorCondition.Support implements Lo
                 // full unlock
                 int oldLockCount = lockCount;
 
+                Waiter h0 = head;
                 owner = null;
                 setLockCountVolatile(0);
+                Waiter h1 = head;
+
+                // we are unlocked now, we just have to set the head to next waiter (if necessary) and
+                // notify it by un-parking it's thread...
 
                 Waiter h = head;
                 if (h != null) {
@@ -362,8 +367,6 @@ public class HybridReentrantLock2 extends MonitorCondition.Support implements Lo
         pushWaiter(h, w);
         boolean interrupted = false;
         while (true) {
-            LockSupport.park(this);
-
             if (head == w && // only attempt to acquire if 1st in queue
                 casLockCount(0, lockIncrement)) {
                 owner = ct;
@@ -372,6 +375,8 @@ public class HybridReentrantLock2 extends MonitorCondition.Support implements Lo
 
             // clear interrupted status but remember it
             interrupted |= Thread.interrupted();
+
+            LockSupport.park(this);
         }
 
         if (interrupted) {

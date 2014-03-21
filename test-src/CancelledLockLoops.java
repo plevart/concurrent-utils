@@ -42,7 +42,7 @@
  */
 
 import si.pele.concurrent.locks.HybridReentrantLock1;
-import si.pele.concurrent.locks.MonitorReentrantLock1;
+import si.pele.concurrent.locks.MonitorReentrantLock;
 
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
@@ -59,7 +59,7 @@ public final class CancelledLockLoops {
         print = true;
 
         List<? extends Class<? extends Lock>> lockClasses = Arrays.asList(
-            MonitorReentrantLock1.class,
+            MonitorReentrantLock.class,
             ReentrantLock.class,
             HybridReentrantLock1.class
         );
