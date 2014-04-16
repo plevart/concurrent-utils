@@ -162,11 +162,12 @@ public class BlockingQueuesTest {
                            : 16;
 
         doTests(maxProducres, 5, 10000000,
-            () -> new LinkedBlockingQueue<Integer>(10000),
-            () -> new ArrayBlockingQueue<Integer>(10000),
-            ConcurrentLinkedQueue_Yielding::new,
-            LinkedTransferQueue::new,
+//            () -> new LinkedBlockingQueue<Integer>(10000),
+//            () -> new ArrayBlockingQueue<Integer>(10000),
+//            ConcurrentLinkedQueue_Yielding::new,
+//            LinkedTransferQueue::new,
             MPSCQueue.Yielding::new,
+            MPSCQueue.Parking::new,
             () -> new MPSCQueue.Bounded.Yielding<Integer>(10000));
     }
 }

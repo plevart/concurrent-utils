@@ -12,7 +12,9 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Predicate;
 
 import static si.pele.concurrent.queue.NQueue.Node.U;
@@ -227,8 +229,75 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
     }
 
     /**
-     * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by spin/yield
-     * back-off-based loops.
+     * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
+     * spin/yield back-off-based loops.
      */
     public static class Yielding<E> extends MPSCQueue<E> implements YieldingQueue<E> {}
+
+    /**
+     * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
+     * park/unparking the consumer thread when queue us empty.
+     */
+    public static class Parking<E> extends MPSCQueue<E> implements YieldingQueue<E> {
+
+        private volatile Thread consumer;
+
+        private static final long consumerOffset = fieldOffset(Parking.class, "consumer");
+
+        private void putOrderedConsumer(Thread t) {
+            U.putOrderedObject(this, consumerOffset, t);
+        }
+
+        @Override
+        public void put(E e) throws InterruptedException {
+            YieldingQueue.super.put(e);
+            unparkConsumer();
+        }
+
+        @Override
+        public boolean offer(E e, long timeout, TimeUnit unit) throws InterruptedException {
+            if (YieldingQueue.super.offer(e, timeout, unit)) {
+                unparkConsumer();
+                return true;
+            } else {
+                return false;
+            }
+        }
+
+        private void unparkConsumer() {
+            Thread t = consumer;
+            if (t != null) {
+                LockSupport.unpark(t);
+            }
+        }
+
+        @Override
+        public E take() throws InterruptedException {
+            int c = 0;
+            E e;
+            while ((e = poll()) == null && c < SPINS) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                c++;
+            }
+            if (e != null) return e;
+            putOrderedConsumer(Thread.currentThread());
+            while (true) {
+                if (Thread.interrupted()) {
+                    putOrderedConsumer(null);
+                    throw new InterruptedException();
+                }
+                if ((e = poll()) == null) {
+                    LockSupport.park(this);
+                } else {
+                    putOrderedConsumer(null);
+                    return e;
+                }
+            }
+        }
+
+        @Override
+        public E poll(long timeout, TimeUnit unit) throws InterruptedException {
+            throw new UnsupportedOperationException();
+        }
+    }
 }

@@ -6,7 +6,6 @@
  */
 package si.pele.concurrent.queue;
 
-import java.util.Collection;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -14,15 +13,19 @@ import java.util.concurrent.TimeUnit;
 /**
  * A set of default methods that can be inherited by a class extending a
  * {@link Queue} implementation in order to produce a {@link BlockingQueue}.
- * It also implements {@link #drainTo} methods and {@link #remainingCapacity()}
- * which just returns {@link Integer#MAX_VALUE}.
- * Waiting is performed using spin/yield-based back-off loops.
+ * It implements {@link #put(Object)}, {@link #offer(Object, long, TimeUnit)},
+ * {@link #take()} and {@link #poll(long, TimeUnit)} using looping with
+ * spin/yield-based back-off.
+ * It also inherits from {@link DrainableQueue}.
  *
  * @author peter.levart@gmail.com
+ * @see DrainableQueue
  */
-public interface YieldingQueue<E> extends BlockingQueue<E> {
+public interface YieldingQueue<E> extends DrainableQueue<E> {
 
-    /** Number of spins before yielding */
+    /**
+     * Number of spins before yielding
+     */
     int SPINS = 5;
 
     static int backoff(int c) {
@@ -77,32 +80,5 @@ public interface YieldingQueue<E> extends BlockingQueue<E> {
             c = backoff(c);
         }
         return e;
-    }
-
-    @Override
-    default int drainTo(Collection<? super E> c) {
-        E e;
-        int n = 0;
-        while ((e = poll()) != null) {
-            c.add(e);
-            n++;
-        }
-        return n;
-    }
-
-    @Override
-    default int drainTo(Collection<? super E> c, int maxElements) {
-        E e;
-        int n = 0;
-        while (n < maxElements && (e = poll()) != null) {
-            c.add(e);
-            n++;
-        }
-        return n;
-    }
-
-    @Override
-    default int remainingCapacity() {
-        return Integer.MAX_VALUE;
     }
 }
