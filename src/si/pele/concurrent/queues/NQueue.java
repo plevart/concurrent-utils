@@ -8,29 +8,41 @@ package si.pele.concurrent.queues;
 
 import sun.misc.Unsafe;
 
+import java.lang.reflect.Field;
 import java.util.Queue;
 import java.util.function.Supplier;
 
 /**
- * A {@link Queue} extension that can offer/poll {@link Node}s instead of elements.
+ * A {@link Queue} extension that can {@link #offerNode}/{@link #pollNode}
+ * in addition to {@link #offer}ing/{@link #poll}ing the elements in order
+ * to optimize transferring elements from one {@link NQueue} to another
+ * without producing garbage.
  *
  * @author peter.levart@gmail.com
  */
 public interface NQueue<E> extends Queue<E> {
 
+    /**
+     * A linked node used in {@link NQueue}s for holding elements and
+     * organizing linked lists.
+     *
+     * @param <E> the type of element contained in the node
+     */
     final class Node<E> implements Supplier<E> {
 
         // Unsafe machinery
 
-        static final sun.misc.Unsafe U;
+        static final Unsafe U;
 
         static {
             try {
-                java.lang.reflect.Field f = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+                Field f = Unsafe.class.getDeclaredField("theUnsafe");
                 f.setAccessible(true);
                 U = (Unsafe) f.get(null);
-            } catch (Exception e) {
-                throw new Error(e);
+            } catch (IllegalAccessException e) {
+                throw (Error) new IllegalAccessError(e.getMessage()).initCause(e);
+            } catch (NoSuchFieldException e) {
+                throw (Error) new NoSuchFieldError(e.getMessage()).initCause(e);
             }
         }
 
@@ -38,13 +50,11 @@ public interface NQueue<E> extends Queue<E> {
             try {
                 return U.objectFieldOffset(clazz.getDeclaredField(fieldName));
             } catch (NoSuchFieldException e) {
-                throw new NoSuchFieldError(fieldName);
+                throw (Error) new NoSuchFieldError(clazz.getName() + "." + fieldName).initCause(e);
             }
         }
 
-        // element
-
-        private E element;
+        // constructors
 
         public Node(E e) {
             if (e == null) throw new NullPointerException();
@@ -52,6 +62,10 @@ public interface NQueue<E> extends Queue<E> {
         }
 
         Node() {}
+
+        // element
+
+        private E element;
 
         public E get() { return element; }
 

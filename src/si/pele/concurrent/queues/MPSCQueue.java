@@ -11,6 +11,9 @@ import java.util.Collection;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Predicate;
 
 import static si.pele.concurrent.queues.NQueue.Node.U;
@@ -40,15 +43,16 @@ public class MPSCQueue<E> extends AbstractQueue<E> implements NQueue<E> {
     private static final long headOffset = fieldOffset(MPSCQueue.class, "head");
 
     @SuppressWarnings("unchecked")
-    private Node<E> gasHead(Node<E> newHead) {
+    private Node<E> getAndSetHead(Node<E> newHead) {
         return (Node<E>) U.getAndSetObject(this, headOffset, newHead);
     }
 
     @Override
     public boolean offerNode(Node<E> n) {
         if (n == null) throw new NullPointerException();
-        Node<E> h = gasHead(n);
-        h.next = n;
+        Node<E> h = getAndSetHead(n);
+        h.putOrderedNext(n);
+        //h.next = n;
         return true;
     }
 
@@ -143,9 +147,160 @@ public class MPSCQueue<E> extends AbstractQueue<E> implements NQueue<E> {
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * This is considered to be a "Consumer" operation, which means it should
+     * only be called from consumer thread of this MPSC queue.
+     */
     @Override
     public void clear() {
         head = tail = new Node<>();
     }
 
+    /**
+     * A bounded variant of {@link MPSCQueue} implemented ingress/outgress
+     * counters.
+     */
+    public static class Bounded<E> extends MPSCQueue<E> {
+
+        final int capacity;
+
+        private final LongAdder ingressCount = new LongAdder();
+
+        private long
+            pad00, pad01, pad02, pad03, pad04, pad05, pad06, pad07;
+
+        private volatile long outgressCount;
+
+        private long
+            pad10, pad11, pad12, pad13, pad14, pad15, pad16, pad17;
+
+        private static final long outgressCountOffset = fieldOffset(Bounded.class, "outgressCount");
+
+        private void putOrderedOutgressCount(long c) {
+            U.putOrderedLong(this, outgressCountOffset, c);
+        }
+
+        public Bounded(int capacity) {
+            this.capacity = capacity;
+        }
+
+        @Override
+        public boolean offerNode(Node<E> n) {
+            if (size() >= capacity) return false;
+            boolean r = super.offerNode(n);
+            if (r) ingressCount.increment();
+            return r;
+        }
+
+        @Override
+        public Node<E> pollNode() {
+            Node<E> n = super.pollNode();
+            if (n != null) putOrderedOutgressCount(outgressCount + 1L);
+            return n;
+        }
+
+        @Override
+        public int size() {
+            return (int) (-outgressCount + ingressCount.sum());
+        }
+    }
+
+    /**
+     * A {@link BlockingQueue} variant of {@link MPSCQueue.Bounded} implemented by spin/yield
+     * back-off-based loops.
+     */
+    public static class Blocking<E> extends Bounded<E> implements BlockingQueue<E> {
+
+        private static final int SPINS = 5;
+
+        public Blocking(int capacity) {
+            super(capacity);
+        }
+
+        static int backoff(int c) {
+            if (c < SPINS) {
+                return c + 1;
+            } else {
+                Thread.yield();
+                return c;
+            }
+        }
+
+        @Override
+        public boolean offer(E e) {
+            return super.offer(e);
+        }
+
+        @Override
+        public void put(E e) throws InterruptedException {
+            int c = 0;
+            while (!offer(e)) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                c = backoff(c);
+            }
+        }
+
+        @Override
+        public boolean offer(E e, long timeout, TimeUnit unit) throws InterruptedException {
+            long deadline = System.nanoTime() + unit.toNanos(timeout);
+            int c = 0;
+            while (!offer(e)) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                if (System.nanoTime() >= deadline) return false;
+                c = backoff(c);
+            }
+            return true;
+        }
+
+        @Override
+        public E take() throws InterruptedException {
+            int c = 0;
+            E e;
+            while ((e = poll()) == null) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                c = backoff(c);
+            }
+            return e;
+        }
+
+        @Override
+        public E poll(long timeout, TimeUnit unit) throws InterruptedException {
+            long deadline = System.nanoTime() + unit.toNanos(timeout);
+            int c = 0;
+            E e;
+            while ((e = poll()) == null) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                if (System.nanoTime() >= deadline) return null;
+                c = backoff(c);
+            }
+            return e;
+        }
+
+        @Override
+        public int remainingCapacity() {
+            return capacity - size();
+        }
+
+        @Override
+        public int drainTo(Collection<? super E> c) {
+            E e;
+            int n = 0;
+            while ((e = poll()) != null) {
+                c.add(e);
+                n++;
+            }
+            return n;
+        }
+
+        @Override
+        public int drainTo(Collection<? super E> c, int maxElements) {
+            E e;
+            int n = 0;
+            while (n < maxElements && (e = poll()) != null) {
+                c.add(e);
+                n++;
+            }
+            return n;
+        }
+    }
 }
