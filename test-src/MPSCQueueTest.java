@@ -5,12 +5,15 @@
  * http://creativecommons.org/licenses/by/3.0/
  */
 
+import si.pele.concurrent.queues.ConcurrentLinkedQueue_Yielding;
 import si.pele.concurrent.queues.MPSCQueue;
 
-import java.util.Arrays;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedTransferQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
@@ -21,25 +24,24 @@ public class MPSCQueueTest {
     static class Consumer extends Thread {
         final BlockingQueue<Integer> queue;
         final int consumeCount;
-        final CountDownLatch latch;
         final int[] prducerHistogram;
         long nanos;
 
-        Consumer(BlockingQueue<Integer> queue, int producers, int consumeCount, CountDownLatch latch) {
+        Consumer(BlockingQueue<Integer> queue, int producers, int consumeCount) {
             this.queue = queue;
             this.consumeCount = consumeCount;
-            this.latch = latch;
             this.prducerHistogram = new int[producers];
         }
 
         @Override
         public void run() {
             try {
-                latch.await();
+                int producerIndex = queue.take();
+                prducerHistogram[producerIndex]++;
 
                 long t0 = System.nanoTime();
-                for (int i = 0; i < consumeCount; i++) {
-                    int producerIndex = queue.take();
+                for (int i = 1; i < consumeCount; i++) {
+                    producerIndex = queue.take();
                     prducerHistogram[producerIndex]++;
                 }
                 nanos = System.nanoTime() - t0;
@@ -53,25 +55,25 @@ public class MPSCQueueTest {
     static class Producer extends Thread {
         final BlockingQueue<Integer> queue;
         final int producerIndex;
-        final int produceCount;
-        final CountDownLatch latch;
+        final CountDownLatch startLatch;
+        final AtomicBoolean stopSignal;
         long nanos;
 
-        Producer(BlockingQueue<Integer> queue, int producerIndex, int produceCount, CountDownLatch latch) {
+        Producer(BlockingQueue<Integer> queue, int producerIndex, CountDownLatch startLatch, AtomicBoolean stopSignal) {
             this.queue = queue;
             this.producerIndex = producerIndex;
-            this.produceCount = produceCount;
-            this.latch = latch;
+            this.startLatch = startLatch;
+            this.stopSignal = stopSignal;
         }
 
         @Override
         public void run() {
             try {
                 Integer e = producerIndex;
-                latch.await();
+                startLatch.await();
 
                 long t0 = System.nanoTime();
-                for (int i = 0; i < produceCount; i++) {
+                while (!stopSignal.get()) {
                     queue.put(e);
                 }
                 nanos = System.nanoTime() - t0;
@@ -86,57 +88,80 @@ public class MPSCQueueTest {
         double throughput;
         long[] producerNanos;
         long consumerNanos;
-        int[] producerHistogram;
+        double[] producerHistogram;
     }
 
-    static Result test(int elementCount, int producers, Supplier<? extends BlockingQueue<Integer>> queueFactory) throws Exception {
-        BlockingQueue<Integer> queue = queueFactory.get();
-        CountDownLatch latch = new CountDownLatch(1);
+    static Result test(int producers, int consumeCount, BlockingQueue<Integer> queue) throws Exception {
+        CountDownLatch startLatch = new CountDownLatch(1);
+        AtomicBoolean stopSignal = new AtomicBoolean();
 
-        Consumer consumer = new Consumer(queue, producers, producers * elementCount, latch);
+        Consumer consumer = new Consumer(queue, producers, consumeCount);
         consumer.start();
         Producer[] producerArray = new Producer[producers];
         for (int i = 0; i < producers; i++) {
-            (producerArray[i] = new Producer(queue, i, elementCount, latch)).start();
+            (producerArray[i] = new Producer(queue, i, startLatch, stopSignal)).start();
         }
 
         System.gc();
 
-        latch.countDown();
-
         Result r = new Result();
         r.producerNanos = new long[producers];
+        r.producerHistogram = new double[producers];
 
+        startLatch.countDown();
+
+        consumer.join();
+        stopSignal.set(true);
+
+        for (int i = 0; i < 10 * producers; i++) {
+            queue.poll();
+        }
         for (int i = 0; i < producers; i++) {
             Producer producer = producerArray[i];
             producer.join();
             r.producerNanos[i] = producer.nanos;
+            r.producerHistogram[i] = 100d * consumer.prducerHistogram[i] / consumeCount;
         }
-        consumer.join();
         r.consumerNanos = consumer.nanos;
-        r.throughput = ((double) producers * elementCount * 1000000000d / (double) consumer.nanos);
-        r.producerHistogram = consumer.prducerHistogram.clone();
+        r.throughput = ((double) consumeCount * 1000000000d / (double) consumer.nanos);
 
         System.gc();
 
         return r;
     }
 
-    static void doTest(String title, int tries, Supplier<? extends BlockingQueue<Integer>> queueFactory) throws Exception {
-        System.out.printf("\n#\n# %s\n#\n", title);
-        for (int p = 1; p < 16; p++) {
-            double tpsum = 0d;
-            for (int t = 1; t <= tries; t++) {
-                Result r = test(16000000 / p, p, queueFactory);
-                tpsum += r.throughput;
-                System.out.printf("%3d producers, try #%02d: %g messages/s - %s\n", p, t, r.throughput, Arrays.toString(r.producerHistogram));
+    static void doTests(int maxProducers, int tries, int msgsPerTry, Supplier<? extends BlockingQueue<Integer>>... queueFactories) throws Exception {
+        System.out.printf("\"# of producers\"");
+        for (int i = 0; i < queueFactories.length; i++) {
+            Class<?> qc = queueFactories[i].get().getClass();
+            String title = qc.getCanonicalName().substring(qc.getPackage().getName().length() + 1);
+            System.out.printf(", \"%s\"", title);
+        }
+        System.out.printf("\n");
+
+        for (int p = 1; p <= maxProducers; p++) {
+            System.out.printf("%d", p);
+            for (int i = 0; i < queueFactories.length; i++) {
+                double tpsum = 0d;
+                for (int t = 0; t < tries; t++) {
+                    Result r = test(p, msgsPerTry, queueFactories[i].get());
+                    tpsum += r.throughput;
+                }
+                System.out.printf(", %g", tpsum / tries);
             }
-            System.out.printf("%3d producers, average: %g messages/s\n\n", p, tpsum / tries);
+            System.out.printf("\n");
         }
     }
 
     public static void main(String[] args) throws Exception {
-        doTest("LinkedBlockingQueue(10000)", 5, () -> new LinkedBlockingQueue<Integer>(10000));
-        doTest("MPSCQueue.Blocking(10000)", 5, () -> new MPSCQueue.Blocking<Integer>(10000));
+        boolean spreadsheet = true;
+
+        doTests(16, 5, 10000000,
+            () -> new LinkedBlockingQueue<Integer>(10000),
+            () -> new ArrayBlockingQueue<Integer>(10000),
+            ConcurrentLinkedQueue_Yielding::new,
+            LinkedTransferQueue::new,
+            MPSCQueue.Yielding::new,
+            () -> new MPSCQueue.Bounded.Yielding<Integer>(10000));
     }
 }

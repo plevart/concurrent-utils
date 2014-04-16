@@ -9,6 +9,7 @@ package si.pele.concurrent.queues;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.util.AbstractQueue;
 import java.util.Queue;
 import java.util.function.Supplier;
 
@@ -73,13 +74,15 @@ public interface NQueue<E> extends Queue<E> {
 
         private static final long elementOffset = fieldOffset(Node.class, "element");
 
-        void putOrdered(E e) {
-            U.putOrderedObject(this, elementOffset, e);
-        }
+        void putOrdered(E e) { U.putOrderedObject(this, elementOffset, e); }
 
         // next
 
-        volatile Node<E> next;
+        private volatile Node<E> next;
+
+        Node<E> getVolatileNext() { return next; }
+
+        void putVolatileNext(Node<E> n) { next = n; }
 
         private static final long nextOffset = fieldOffset(Node.class, "next");
 
@@ -92,12 +95,18 @@ public interface NQueue<E> extends Queue<E> {
 
     Node<E> pollNode();
 
-    default boolean offer(E e) {
-        return offerNode(new Node<>(e));
-    }
+    /**
+     * a base class for implementing {@link NQueue}s
+     */
+    abstract class Base<E> extends AbstractQueue<E> implements NQueue<E> {
 
-    default E poll() {
-        Node<E> n = pollNode();
-        return (n == null) ? null : n.get();
+        public boolean offer(E e) {
+            return offerNode(new Node<>(e));
+        }
+
+        public E poll() {
+            Node<E> n = pollNode();
+            return (n == null) ? null : n.get();
+        }
     }
 }
