@@ -4,7 +4,7 @@
  * This work is licensed under a Creative Commons Attribution 3.0 Unported License:
  * http://creativecommons.org/licenses/by/3.0/
  */
-package si.pele.concurrent.queues;
+package si.pele.concurrent.queue;
 
 import java.util.Collection;
 import java.util.ConcurrentModificationException;
@@ -15,8 +15,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Predicate;
 
-import static si.pele.concurrent.queues.NQueue.Node.U;
-import static si.pele.concurrent.queues.NQueue.Node.fieldOffset;
+import static si.pele.concurrent.queue.NQueue.Node.U;
+import static si.pele.concurrent.queue.NQueue.Node.fieldOffset;
 
 /**
  * Unbounded Multiple Producer Single Consumer {@link Queue} implementation

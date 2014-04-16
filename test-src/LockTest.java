@@ -4,7 +4,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-import si.pele.concurrent.locks.HybridReentrantLock1;
+import si.pele.concurrent.lock.HybridReentrantLock1;
 
 import java.util.concurrent.locks.Lock;
 

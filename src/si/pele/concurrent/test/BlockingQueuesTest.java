@@ -1,12 +1,12 @@
-/*
+package si.pele.concurrent.test;/*
  * Copyright (C) 2014 Peter Levart
  *
  * This work is licensed under a Creative Commons Attribution 3.0 Unported License:
  * http://creativecommons.org/licenses/by/3.0/
  */
 
-import si.pele.concurrent.queues.ConcurrentLinkedQueue_Yielding;
-import si.pele.concurrent.queues.MPSCQueue;
+import si.pele.concurrent.queue.ConcurrentLinkedQueue_Yielding;
+import si.pele.concurrent.queue.MPSCQueue;
 
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -17,9 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
- * @author peter
+ * A test comparing throughput of {@link BlockingQueue}s using MPSC scenario
+ *
+ * @author peter.levart@gmail.com
  */
-public class MPSCQueueTest {
+public class BlockingQueuesTest {
 
     static class Consumer extends Thread {
         final BlockingQueue<Integer> queue;
@@ -154,9 +156,12 @@ public class MPSCQueueTest {
     }
 
     public static void main(String[] args) throws Exception {
-        boolean spreadsheet = true;
 
-        doTests(16, 5, 10000000,
+        int maxProducres = (args.length > 0)
+                           ? Integer.parseInt(args[0])
+                           : 16;
+
+        doTests(maxProducres, 5, 10000000,
             () -> new LinkedBlockingQueue<Integer>(10000),
             () -> new ArrayBlockingQueue<Integer>(10000),
             ConcurrentLinkedQueue_Yielding::new,

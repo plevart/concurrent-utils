@@ -41,8 +41,8 @@
  * msecs to complete.
  */
 
-import si.pele.concurrent.locks.HybridReentrantLock1;
-import si.pele.concurrent.locks.MonitorReentrantLock;
+import si.pele.concurrent.lock.HybridReentrantLock1;
+import si.pele.concurrent.lock.MonitorReentrantLock;
 
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
