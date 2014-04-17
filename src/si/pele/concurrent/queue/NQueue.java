@@ -67,28 +67,24 @@ public interface NQueue<E> extends Queue<E> {
         // element
 
         private E element;
+        private static final long elementOffset = fieldOffset(Node.class, "element");
 
         public E get() { return element; }
 
         void put(E e) { element = e; }
 
-        private static final long elementOffset = fieldOffset(Node.class, "element");
-
-        void putOrdered(E e) { U.putOrderedObject(this, elementOffset, e); }
+        void puto(E e) { U.putOrderedObject(this, elementOffset, e); }
 
         // next
 
         private volatile Node<E> next;
-
-        Node<E> getVolatileNext() { return next; }
-
-        void putVolatileNext(Node<E> n) { next = n; }
-
         private static final long nextOffset = fieldOffset(Node.class, "next");
 
-        void putOrderedNext(Node<E> n) {
-            U.putOrderedObject(this, nextOffset, n);
-        }
+        Node<E> getvNext() { return next; }
+
+        void putvNext(Node<E> n) { next = n; }
+
+        void putoNext(Node<E> n) { U.putOrderedObject(this, nextOffset, n); }
     }
 
     boolean offerNode(Node<E> n);

@@ -13,6 +13,7 @@ import java.util.NoSuchElementException;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Predicate;
@@ -47,43 +48,70 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
     private static final long headOffset = fieldOffset(MPSCQueue.class, "head");
 
     @SuppressWarnings("unchecked")
-    private Node<E> getAndSetHead(Node<E> newHead) {
+    private Node<E> gasHead(Node<E> newHead) {
         return (Node<E>) U.getAndSetObject(this, headOffset, newHead);
+    }
+
+    private final boolean lazyProducer;
+
+    /**
+     * Constructs queue with lazy producer methods ({@link #offer} & {@link #add})
+     * meaning that elements submited to the queue are not visible immediately
+     * to consumer thread, but eventually
+     * (like in {@link AtomicReference#lazySet(Object)}).
+     * This has some performance advantage.
+     */
+    public MPSCQueue() {
+        this(true);
+    }
+
+    /**
+     * Constructs queue with producer methods behaving as requested by parameter.
+     *
+     * @param lazyProducer if true, producer methods are lazy, meaning that
+     *                     elements submited to the queue are not visible immediately
+     *                     to consumer thread, but eventually.
+     *                     (like in {@link AtomicReference#lazySet(Object)})
+     */
+    public MPSCQueue(boolean lazyProducer) {
+        this.lazyProducer = lazyProducer;
     }
 
     @Override
     public boolean offerNode(Node<E> n) {
         if (n == null) throw new NullPointerException();
-        Node<E> h = getAndSetHead(n);
-        h.putOrderedNext(n);
-        //h.putVolatileNext(n);
+        Node<E> h = gasHead(n);
+        if (lazyProducer)
+            h.putoNext(n);
+        else
+            h.putvNext(n);
         return true;
     }
 
     @Override
     public Node<E> pollNode() {
         Node<E> t = tail;
-        Node<E> n = t.getVolatileNext();
+        Node<E> n = t.getvNext();
         if (n == null) return null;
         E e = n.get();
-        n.putOrdered(null); // for GC
+        n.puto(null); // for GC
         tail = n;
         // re-use 't' as a container
         t.put(e);
-        t.putOrderedNext(null); // detach next
+        t.putoNext(null); // detach next
         return t;
     }
 
     @Override
     public E peek() {
-        Node<E> n = tail.getVolatileNext();
+        Node<E> n = tail.getvNext();
         return (n == null) ? null : n.get();
     }
 
     @Override
     public int size() {
         int size = 0;
-        for (Node<E> n = tail.getVolatileNext(); n != null; n = n.getVolatileNext()) {
+        for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
             size++;
         }
         return size;
@@ -91,12 +119,12 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
 
     @Override
     public boolean isEmpty() {
-        return tail.getVolatileNext() == null;
+        return tail.getvNext() == null;
     }
 
     @Override
     public boolean contains(Object o) {
-        for (Node<E> n = tail.getVolatileNext(); n != null; n = n.getVolatileNext()) {
+        for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
             if (n.get().equals(o)) {
                 return true;
             }
@@ -106,7 +134,7 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
 
     @Override
     public Iterator<E> iterator() {
-        return new It<>(tail.getVolatileNext());
+        return new It<>(tail.getvNext());
     }
 
     private static class It<E> implements Iterator<E> {
@@ -126,7 +154,7 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
             if (n == null) throw new NoSuchElementException();
             E e = n.get();
             if (e == null) throw new ConcurrentModificationException();
-            n = n.getVolatileNext();
+            n = n.getvNext();
             return e;
         }
     }
@@ -185,6 +213,12 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
         }
 
         public Bounded(int capacity) {
+            super();
+            this.capacity = capacity;
+        }
+
+        public Bounded(boolean lazyProducer, int capacity) {
+            super(lazyProducer);
             this.capacity = capacity;
         }
 
@@ -219,7 +253,13 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
          * back-off-based loops.
          */
         public static class Yielding<E> extends Bounded<E> implements YieldingQueue<E> {
-            public Yielding(int capacity) { super(capacity); }
+            public Yielding(int capacity) {
+                super(capacity);
+            }
+
+            public Yielding(boolean lazyProducer, int capacity) {
+                super(lazyProducer, capacity);
+            }
 
             @Override
             public int remainingCapacity() {
@@ -232,13 +272,21 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
      * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
      * spin/yield back-off-based loops.
      */
-    public static class Yielding<E> extends MPSCQueue<E> implements YieldingQueue<E> {}
+    public static class Yielding<E> extends MPSCQueue<E> implements YieldingQueue<E> {
+        public Yielding() { }
+
+        public Yielding(boolean lazyProducer) { super(lazyProducer); }
+    }
 
     /**
      * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
      * park/unparking the consumer thread when queue us empty.
      */
     public static class Parking<E> extends MPSCQueue<E> implements YieldingQueue<E> {
+
+        public Parking() { }
+
+        public Parking(boolean lazyProducer) { super(lazyProducer); }
 
         private volatile Thread consumer;
 
@@ -275,9 +323,8 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
         public E take() throws InterruptedException {
             int c = 0;
             E e;
-            while ((e = poll()) == null && c < SPINS) {
+            while ((e = poll()) == null && ++c < SPINS) {
                 if (Thread.interrupted()) throw new InterruptedException();
-                c++;
             }
             if (e != null) return e;
             putOrderedConsumer(Thread.currentThread());
@@ -297,7 +344,29 @@ public class MPSCQueue<E> extends NQueue.Base<E> {
 
         @Override
         public E poll(long timeout, TimeUnit unit) throws InterruptedException {
-            throw new UnsupportedOperationException();
+            long deadline = System.nanoTime() + unit.toNanos(timeout);
+            int c = 0;
+            E e;
+            while ((e = poll()) == null && ++c < SPINS) {
+                if (Thread.interrupted()) throw new InterruptedException();
+                if (System.nanoTime() >= deadline) return null;
+            }
+            if (e != null) return e;
+            putOrderedConsumer(Thread.currentThread());
+            try {
+                while (true) {
+                    if (Thread.interrupted()) throw new InterruptedException();
+                    long nanos = deadline - System.nanoTime();
+                    if (nanos <= 0) return null;
+                    if ((e = poll()) == null) {
+                        LockSupport.parkNanos(this, nanos);
+                    } else {
+                        return e;
+                    }
+                }
+            } finally {
+                putOrderedConsumer(null);
+            }
         }
     }
 }
