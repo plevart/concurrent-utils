@@ -11,8 +11,6 @@ import java.util.Collection;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.Queue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
@@ -22,18 +20,18 @@ import static si.pele.concurrent.queue.Node.U;
 import static si.pele.concurrent.queue.Node.fieldOffset;
 
 /**
- * Unbounded Multiple Producer Single Consumer {@link Queue} implementation
+ * Unbounded Multiple Producer Multiple Consumer {@link java.util.Queue} implementation
  * using linked list.
  *
  * @author peter.levart@gmail.com
  */
-public class MPSCQueue<E> extends AbstractQueue<E> {
+public class MPMCQueue<E> extends AbstractQueue<E> {
 
     private Object
         pad00, pad01, pad02, pad03, pad04, pad05, pad06, pad07,
         pad08, pad09, pad0A, pad0B, pad0C, pad0D, pad0E, pad0F;
 
-    private Node<E> tail = new Node<>();
+    private volatile Node<E> tail = new Node<>();
 
     private Object
         pad10, pad11, pad12, pad13, pad14, pad15, pad16, pad17,
@@ -45,7 +43,14 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
         pad20, pad21, pad22, pad23, pad24, pad25, pad26, pad27,
         pad28, pad29, pad2A, pad2B, pad2C, pad2D, pad2E, pad2F;
 
-    private static final long headOffset = fieldOffset(MPSCQueue.class, "head");
+    private static final long tailOffset = fieldOffset(MPMCQueue.class, "tail");
+
+    @SuppressWarnings("unchecked")
+    private boolean casTail(Node<E> oldTail, Node<E> newTail) {
+        return U.compareAndSwapObject(this, tailOffset, oldTail, newTail);
+    }
+
+    private static final long headOffset = fieldOffset(MPMCQueue.class, "head");
 
     @SuppressWarnings("unchecked")
     private Node<E> gasHead(Node<E> newHead) {
@@ -62,13 +67,13 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
 
     @Override
     public E poll() {
-        Node<E> t = tail;
-        Node<E> n = t.getvNext();
-        if (n == null) return null;
-        E e = n.get();
-        n.puto(null); // for GC
-        tail = n;
-        return e;
+        Node<E> t, n;
+        do {
+            t = tail;
+            n = t.getvNext();
+            if (n == null) return null;
+        } while (!casTail(t, n));
+        return n.get();
     }
 
     @Override
@@ -148,20 +153,20 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
         throw new UnsupportedOperationException();
     }
 
-    /**
-     * This is considered to be a "Consumer" operation, which means it should
-     * only be called from consumer thread of this MPSC queue.
-     */
     @Override
     public void clear() {
-        head = tail = new Node<>();
+        Node<E> n = new Node<>();
+        // start accumulating new nodes on head 1st...
+        head = n;
+        // ...then change the view (this is important to not loose any offers)
+        tail = n;
     }
 
     /**
-     * A bounded variant of {@link MPSCQueue} implemented using ingress/egress
+     * A bounded variant of {@link si.pele.concurrent.queue.MPMCQueue} implemented using ingress/egress
      * counters.
      */
-    public static class Bounded<E> extends MPSCQueue<E> implements BoundedQueue<E> {
+    public static class Bounded<E> extends MPMCQueue<E> implements BoundedQueue<E> {
 
         private final int capacity;
 
@@ -212,7 +217,7 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
         }
 
         /**
-         * A {@link BlockingQueue} variant of {@link MPSCQueue.Bounded} implemented by spin/yield
+         * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue.Bounded} implemented by spin/yield
          * back-off-based loops.
          */
         public static class Yielding<E> extends Bounded<E> implements YieldingQueue<E> {
@@ -228,18 +233,18 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
     }
 
     /**
-     * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
+     * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue} (unbounded) implemented by
      * spin/yield back-off-based loops.
      */
-    public static class Yielding<E> extends MPSCQueue<E> implements YieldingQueue<E> {
+    public static class Yielding<E> extends MPMCQueue<E> implements YieldingQueue<E> {
         public Yielding() { }
     }
 
     /**
-     * A {@link BlockingQueue} variant of {@link MPSCQueue} (unbounded) implemented by
+     * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue} (unbounded) implemented by
      * park/unparking the consumer thread when queue us empty.
      */
-    public static class Parking<E> extends MPSCQueue<E> implements YieldingQueue<E> {
+    public static class Parking<E> extends MPMCQueue<E> implements YieldingQueue<E> {
 
         private volatile Thread consumer;
 
