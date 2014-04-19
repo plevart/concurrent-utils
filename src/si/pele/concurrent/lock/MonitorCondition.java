@@ -4,7 +4,7 @@
  * This work is licensed under a Creative Commons Attribution 3.0 Unported License:
  * http://creativecommons.org/licenses/by/3.0/
  */
-package si.pele.concurrent.locks;
+package si.pele.concurrent.lock;
 
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
