@@ -12,9 +12,7 @@ import java.util.Queue;
 import java.util.function.Supplier;
 
 /**
- * A {@link Queue} extension that can {@link #offerNode}/{@link #pollNode} in
- * addition to plain elements. This can be used to optimize transfer from one
- * {@link NQueue} to another without producing intermediary garbage...
+ * A {@link Queue} extension that can offer/poll {@link Node}s instead of elements.
  *
  * @author peter.levart@gmail.com
  */
@@ -88,6 +86,4 @@ public interface NQueue<E> extends Queue<E> {
         Node<E> n = pollNode();
         return (n == null) ? null : n.get();
     }
-
-    // defaults taken from AbstractQueue
 }

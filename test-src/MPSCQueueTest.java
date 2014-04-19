@@ -7,7 +7,7 @@
 
 import si.pele.concurrent.queues.MPSCQueue;
 
-import java.util.concurrent.BlockingQueue;
+import java.util.Queue;
 import java.util.concurrent.CountDownLatch;
 
 /**
@@ -16,12 +16,12 @@ import java.util.concurrent.CountDownLatch;
 public class MPSCQueueTest {
 
     static class Consumer extends Thread {
-        final BlockingQueue<?> queue;
+        final Queue<?> queue;
         final int expectedCount;
         final CountDownLatch latch;
         long nanos;
 
-        Consumer(BlockingQueue<?> queue, int expectedCount, CountDownLatch latch) {
+        Consumer(Queue<?> queue, int expectedCount, CountDownLatch latch) {
             this.queue = queue;
             this.expectedCount = expectedCount;
             this.latch = latch;
@@ -31,24 +31,26 @@ public class MPSCQueueTest {
         public void run() {
             try {
                 latch.await();
-                long t0 = System.nanoTime();
-                for (int i = 0; i < expectedCount; i++) {
-                    queue.take();
-                }
-                nanos = System.nanoTime() - t0;
             } catch (InterruptedException e) {
                 throw new Error(e);
             }
+            long t0 = System.nanoTime();
+            for (int i = 0; i < expectedCount; i++) {
+                while (queue.poll() == null) {
+                    Thread.yield();
+                }
+            }
+            nanos = System.nanoTime() - t0;
         }
     }
 
     static class Producer extends Thread {
-        final BlockingQueue<Object> queue;
+        final Queue<Object> queue;
         final int count;
         final CountDownLatch latch;
         long nanos;
 
-        Producer(BlockingQueue<Object> queue, int count, CountDownLatch latch) {
+        Producer(Queue<Object> queue, int count, CountDownLatch latch) {
             this.queue = queue;
             this.count = count;
             this.latch = latch;
@@ -58,19 +60,19 @@ public class MPSCQueueTest {
         public void run() {
             try {
                 latch.await();
-                long t0 = System.nanoTime();
-                for (int i = 0; i < count; i++) {
-                    queue.put(Boolean.TRUE);
-                }
-                nanos = System.nanoTime() - t0;
             } catch (InterruptedException e) {
                 throw new Error(e);
             }
-
+            long t0 = System.nanoTime();
+            for (int i = 0; i < count; i++) {
+                queue.add(Boolean.TRUE);
+            }
+            nanos = System.nanoTime() - t0;
         }
     }
 
-    static double test(int elementCount, int producerCount, BlockingQueue<Object> queue) throws Exception {
+    static void test(int _try, int elementCount, int producerCount) throws Exception {
+        Queue<Object> queue = new MPSCQueue<>();
         CountDownLatch latch = new CountDownLatch(1);
 
         Consumer consumer = new Consumer(queue, producerCount * elementCount, latch);
@@ -80,29 +82,28 @@ public class MPSCQueueTest {
             (producers[i] = new Producer(queue, elementCount, latch)).start();
         }
 
+        System.out.println("try #" + _try + ": " + producerCount + " producers with single consumer, " + (producerCount * elementCount) + " messages in total...");
         System.gc();
 
         latch.countDown();
 
         for (int i = 0; i < producerCount; i++) {
             producers[i].join();
+            System.out.println("        Producer #" + (i + 1) + ": " + producers[i].nanos + " ns");
         }
+
         consumer.join();
+        System.out.println("        Consumer   : " + consumer.nanos + " ns (throughput: " + ((double) producerCount * elementCount * 1000000000d / (double) consumer.nanos) + " messages/s)");
 
         System.gc();
-
-        return ((double) producerCount * elementCount * 1000000000d / (double) consumer.nanos);
     }
 
     public static void main(String[] args) throws Exception {
 
         int _try = 0;
-        for (int p = 1; p < 16; p++) {
-            for (int t = 1; t <= 5; t++) {
-                System.out.printf("try #%02d: %3d producers: %g messages/s\n", ++_try, p, test(16000000 / p, p, new MPSCQueue.Blocking<>()));
-            }
-            System.out.println();
-        }
+        for (int p = 7; p < 16; p++)
+            for (int t = 1; t <= 5; t++)
+                test(++_try, 10000000, p);
 
     }
 }

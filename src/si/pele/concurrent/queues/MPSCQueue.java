@@ -6,18 +6,17 @@
  */
 package si.pele.concurrent.queues;
 
-import java.util.*;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.AbstractQueue;
+import java.util.Collection;
+import java.util.ConcurrentModificationException;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
 import static si.pele.concurrent.queues.NQueue.Node.U;
 import static si.pele.concurrent.queues.NQueue.Node.fieldOffset;
 
 /**
- * Multiple Producer Single Consumer {@link NQueue} implementation.
- * (non-blocking and non-waiting)
- *
  * @author peter.levart@gmail.com
  */
 public class MPSCQueue<E> extends AbstractQueue<E> implements NQueue<E> {
@@ -49,7 +48,7 @@ public class MPSCQueue<E> extends AbstractQueue<E> implements NQueue<E> {
     public boolean offerNode(Node<E> n) {
         if (n == null) throw new NullPointerException();
         Node<E> h = gasHead(n);
-        h.putOrderedNext(n);
+        h.next = n;
         return true;
     }
 
@@ -149,95 +148,4 @@ public class MPSCQueue<E> extends AbstractQueue<E> implements NQueue<E> {
         head = tail = new Node<>();
     }
 
-    public static class Blocking<E> extends MPSCQueue<E> implements BlockingQueue<E> {
-
-        private static final int SPINS = 5;
-
-        private static int backoff(int count) {
-            if (count < SPINS) {
-                return count + 1;
-            } else {
-                Thread.yield();
-                return count;
-            }
-        }
-
-        @Override
-        public boolean offer(E e) {
-            return super.offer(e);
-        }
-
-        @Override
-        public void put(E e) throws InterruptedException {
-            int boc = 0;
-            while (true) {
-                if (offer(e)) return;
-                if (Thread.interrupted()) throw new InterruptedException();
-                boc = backoff(boc);
-            }
-        }
-
-        @Override
-        public boolean offer(E e, long timeout, TimeUnit unit) throws InterruptedException {
-            int boc = 0;
-            long deadline = System.nanoTime() + unit.toNanos(timeout);
-            while (true) {
-                if (offer(e)) return true;
-                if (Thread.interrupted()) throw new InterruptedException();
-                if (System.nanoTime() >= deadline) return false;
-                boc = backoff(boc);
-            }
-        }
-
-        @Override
-        public E take() throws InterruptedException {
-            int boc = 0;
-            while (true) {
-                E e = poll();
-                if (e != null) return e;
-                if (Thread.interrupted()) throw new InterruptedException();
-                boc = backoff(boc);
-            }
-        }
-
-        @Override
-        public E poll(long timeout, TimeUnit unit) throws InterruptedException {
-            int boc = 0;
-            long deadline = System.nanoTime() + unit.toNanos(timeout);
-            while (true) {
-                E e = poll();
-                if (e != null) return e;
-                if (Thread.interrupted()) throw new InterruptedException();
-                if (System.nanoTime() >= deadline) return null;
-                boc = backoff(boc);
-            }
-        }
-
-        @Override
-        public int remainingCapacity() {
-            return Integer.MAX_VALUE;
-        }
-
-        @Override
-        public int drainTo(Collection<? super E> c) {
-            E e;
-            int n = 0;
-            while ((e = poll()) != null) {
-                c.add(e);
-                n++;
-            }
-            return n;
-        }
-
-        @Override
-        public int drainTo(Collection<? super E> c, int maxElements) {
-            E e;
-            int n = 0;
-            while (n < maxElements && (e = poll()) != null) {
-                c.add(e);
-                n++;
-            }
-            return n;
-        }
-    }
 }
