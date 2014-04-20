@@ -6,11 +6,7 @@
  */
 package si.pele.concurrent.queue;
 
-import java.util.AbstractQueue;
-import java.util.Collection;
-import java.util.ConcurrentModificationException;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
@@ -73,13 +69,22 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
             n = t.getvNext();
             if (n == null) return null;
         } while (!casTail(t, n));
-        return n.get();
+        E e = n.get();
+        n.puto(null);
+        return e;
     }
 
     @Override
     public E peek() {
-        Node<E> n = tail.getvNext();
-        return (n == null) ? null : n.get();
+        Node<E> t, n;
+        E e;
+        do {
+            t = tail;
+            n = t.getvNext();
+            if (n == null) return null;
+            e = n.get();
+        } while (e == null);
+        return e;
     }
 
     @Override
@@ -98,8 +103,10 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
 
     @Override
     public boolean contains(Object o) {
+        if (o == null) return false;
         for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
-            if (n.get().equals(o)) {
+            E e = n.get();
+            if (e != null && e.equals(o)) {
                 return true;
             }
         }

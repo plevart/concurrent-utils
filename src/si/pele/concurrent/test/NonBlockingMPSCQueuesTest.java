@@ -5,6 +5,7 @@ package si.pele.concurrent.test;/*
  * http://creativecommons.org/licenses/by/3.0/
  */
 
+import si.pele.concurrent.queue.MPMCQueue;
 import si.pele.concurrent.queue.MPSCQueue;
 
 import java.util.Queue;
@@ -157,7 +158,9 @@ public class NonBlockingMPSCQueuesTest {
         doTests(maxProducres, 10, 5000000,
             ConcurrentLinkedQueue::new,
             MPSCQueue::new,
-            () -> new MPSCQueue.Bounded(10000)
+            () -> new MPSCQueue.Bounded<Integer>(10000),
+            MPMCQueue::new,
+            () -> new MPMCQueue.Bounded<Integer>(10000)
         );
     }
 }

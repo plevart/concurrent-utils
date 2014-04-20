@@ -93,6 +93,7 @@ public class MPSCQueue<E> extends AbstractQueue<E> {
 
     @Override
     public boolean contains(Object o) {
+        if (o == null) return false;
         for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
             if (n.get().equals(o)) {
                 return true;
