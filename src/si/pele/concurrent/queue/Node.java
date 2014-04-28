@@ -48,8 +48,7 @@ final class Node<E> implements Supplier<E> {
 
     Node(E e) {
         if (e == null) throw new NullPointerException();
-        putv(e);
-        //element = e;
+        element = e;
     }
 
     Node() {}
