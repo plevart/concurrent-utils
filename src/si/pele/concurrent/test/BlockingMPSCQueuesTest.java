@@ -5,12 +5,15 @@ package si.pele.concurrent.test;/*
  * http://creativecommons.org/licenses/by/3.0/
  */
 
+import si.pele.concurrent.queue.ConcurrentLinkedQueue_Yielding;
 import si.pele.concurrent.queue.MPMCQueue;
 import si.pele.concurrent.queue.MPSCQueue;
 
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedTransferQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
@@ -159,17 +162,23 @@ public class BlockingMPSCQueuesTest {
                            ? Integer.parseInt(args[0])
                            : 16;
 
-        doTests(maxProducres, 10, 5000000,
-            () -> new LinkedBlockingQueue<Integer>(10000),
+//        doTests(maxProducres, 10, 5000000,
+//            () -> new LinkedBlockingQueue<Integer>(10000),
 //            () -> new ArrayBlockingQueue<Integer>(10000),
-//            ConcurrentLinkedQueue_Yielding::new,
-//            LinkedTransferQueue::new,
+//            () -> new MPSCQueue.Bounded.Yielding<Integer>(10000),
+//            () -> new MPMCQueue.Bounded.Yielding<Integer>(10000)
+//        );
+
+        System.out.println();
+
+        doTests(maxProducres, 10, 5000000,
+            ConcurrentLinkedQueue_Yielding::new,
+            LinkedTransferQueue::new,
             MPSCQueue.Yielding::new,
             MPSCQueue.Parking::new,
-            () -> new MPSCQueue.Bounded.Yielding<Integer>(10000),
             MPMCQueue.Yielding::new,
-            MPMCQueue.Parking::new,
-            () -> new MPMCQueue.Bounded.Yielding<Integer>(10000)
+            MPMCQueue.Parking::new
         );
+
     }
 }

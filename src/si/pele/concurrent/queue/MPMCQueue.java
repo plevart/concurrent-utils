@@ -6,11 +6,14 @@
  */
 package si.pele.concurrent.queue;
 
-import java.util.*;
+import java.util.AbstractQueue;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
-import java.util.function.Predicate;
+import java.util.function.Consumer;
 
 import static si.pele.concurrent.queue.Node.U;
 import static si.pele.concurrent.queue.Node.fieldOffset;
@@ -41,7 +44,6 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
 
     private static final long tailOffset = fieldOffset(MPMCQueue.class, "tail");
 
-    @SuppressWarnings("unchecked")
     private boolean casTail(Node<E> oldTail, Node<E> newTail) {
         return U.compareAndSwapObject(this, tailOffset, oldTail, newTail);
     }
@@ -53,24 +55,30 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
         return (Node<E>) U.getAndSetObject(this, headOffset, newHead);
     }
 
-    @Override
-    public boolean offer(E e) {
+    final Node<E> putNode(E e) {
         Node<E> n = new Node<>(e);
         Node<E> h = gasHead(n);
         h.putvNext(n);
+        return n;
+    }
+
+    @Override
+    public boolean offer(E e) {
+        putNode(e);
         return true;
     }
 
     @Override
     public E poll() {
         Node<E> t, n;
+        E e;
         do {
-            t = tail;
-            n = t.getvNext();
-            if (n == null) return null;
-        } while (!casTail(t, n));
-        E e = n.get();
-        n.puto(null);
+            do {
+                t = tail;
+                n = t.getvNext();
+                if (n == null) return null;
+            } while (!casTail(t, n));
+        } while ((e = n.gas(null)) == null);
         return e;
     }
 
@@ -78,27 +86,28 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
     public E peek() {
         Node<E> t, n;
         E e;
-        do {
-            t = tail;
+        t = tail;
+        while (true) {
             n = t.getvNext();
             if (n == null) return null;
-            e = n.get();
-        } while (e == null);
-        return e;
+            if ((e = n.get()) != null) return e;
+            if (casTail(t, n)) {
+                t = n;
+            } else {
+                t = tail;
+            }
+        }
     }
 
     @Override
     public int size() {
         int size = 0;
         for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
-            size++;
+            if (n.get() != null) {
+                size++;
+            }
         }
         return size;
-    }
-
-    @Override
-    public boolean isEmpty() {
-        return tail.getvNext() == null;
     }
 
     @Override
@@ -119,7 +128,8 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
     }
 
     private static class It<E> implements Iterator<E> {
-        private Node<E> n;
+        private Node<E> l, n;
+        private E ne;
 
         It(Node<E> n) {
             this.n = n;
@@ -127,37 +137,40 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
 
         @Override
         public boolean hasNext() {
+            while (n != null && (ne = n.get()) == null) {
+                n = n.getvNext();
+            }
             return n != null;
         }
 
         @Override
         public E next() {
-            if (n == null) throw new NoSuchElementException();
-            E e = n.get();
-            if (e == null) throw new ConcurrentModificationException();
+            if (!hasNext()) throw new NoSuchElementException();
+            E e = ne;
+            l = n;
             n = n.getvNext();
+            ne = null;
             return e;
+        }
+
+        @Override
+        public void remove() {
+            if (l == null) throw new IllegalStateException();
+            l.putv(null);
+            l = null;
         }
     }
 
     @Override
     public boolean remove(Object o) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean removeAll(Collection<?> c) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean retainAll(Collection<?> c) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean removeIf(Predicate<? super E> filter) {
-        throw new UnsupportedOperationException();
+        if (o == null) return false;
+        for (Node<E> n = tail.getvNext(); n != null; n = n.getvNext()) {
+            E e = n.get();
+            if (e != null && e.equals(o) && n.cas(e, null)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -169,6 +182,38 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
         tail = n;
     }
 
+    // this is internal iterator which removes cleared nodes on the way...
+
+    @Override
+    public void forEach(Consumer<? super E> action) {
+        Node<E> p = null;
+        Node<E> t = tail;
+        Node<E> n = t.getvNext();
+        while (n != null) {
+            E e = n.get();
+            if (e == null) {
+                if (p == null) {
+                    if (casTail(t, n)) {
+                        t = n;
+                    } else {
+                        t = tail;
+                    }
+                } else {
+                    if (p.casNext(t, n)) {
+                        t = n;
+                    } else {
+                        t = p.getvNext();
+                    }
+                }
+            } else {
+                action.accept(e);
+                p = t;
+                t = n;
+            }
+            n = t.getvNext();
+        }
+    }
+
     /**
      * A bounded variant of {@link si.pele.concurrent.queue.MPMCQueue} implemented using ingress/egress
      * counters.
@@ -176,22 +221,8 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
     public static class Bounded<E> extends MPMCQueue<E> implements BoundedQueue<E> {
 
         private final int capacity;
-
         private final LongAdder ingressCount = new LongAdder();
-
-        private long
-            pad00, pad01, pad02, pad03, pad04, pad05, pad06, pad07;
-
-        private volatile long egressCount;
-
-        private long
-            pad10, pad11, pad12, pad13, pad14, pad15, pad16, pad17;
-
-        private static final long egressCountOffset = fieldOffset(Bounded.class, "egressCount");
-
-        private void putoEgressCount(long c) {
-            U.putOrderedLong(this, egressCountOffset, c);
-        }
+        private final LongAdder egressCount = new LongAdder();
 
         public Bounded(int capacity) {
             this.capacity = capacity;
@@ -208,14 +239,14 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
         @Override
         public E poll() {
             E e = super.poll();
-            if (e != null) putoEgressCount(egressCount + 1L);
+            if (e != null) egressCount.increment();
             return e;
         }
 
         @Override
         public int size() {
             // read egress before ingress - this returns a conservative upper bound of current size
-            return (int) (-egressCount + ingressCount.sum());
+            return (int) (-egressCount.sum() + ingressCount.sum());
         }
 
         @Override
@@ -224,7 +255,7 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
         }
 
         /**
-         * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue.Bounded} implemented by spin/yield
+         * A {@link BlockingQueue} variant of {@link MPMCQueue.Bounded} implemented by spin/yield
          * back-off-based loops.
          */
         public static class Yielding<E> extends Bounded<E> implements YieldingQueue<E> {
@@ -240,7 +271,7 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
     }
 
     /**
-     * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue} (unbounded) implemented by
+     * A {@link BlockingQueue} variant of {@link MPMCQueue} (unbounded) implemented by
      * spin/yield back-off-based loops.
      */
     public static class Yielding<E> extends MPMCQueue<E> implements YieldingQueue<E> {
@@ -248,39 +279,20 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
     }
 
     /**
-     * A {@link java.util.concurrent.BlockingQueue} variant of {@link si.pele.concurrent.queue.MPMCQueue} (unbounded) implemented by
-     * park/unparking the consumer thread when queue us empty.
+     * A {@link BlockingQueue} variant of {@link MPMCQueue} (unbounded) implemented by
+     * park/unparking the consumer threads when queue is empty.
      */
     public static class Parking<E> extends MPMCQueue<E> implements YieldingQueue<E> {
 
-        private volatile Thread consumer;
-
-        private static final long consumerOffset = fieldOffset(Parking.class, "consumer");
-
-        private void putoConsumer(Thread t) {
-            U.putOrderedObject(this, consumerOffset, t);
-        }
+        private final MPMCQueue<Thread> consumers = new MPMCQueue<>();
 
         @Override
-        public void put(E e) throws InterruptedException {
-            YieldingQueue.super.put(e);
-            unparkConsumer();
-        }
-
-        @Override
-        public boolean offer(E e, long timeout, TimeUnit unit) throws InterruptedException {
-            if (YieldingQueue.super.offer(e, timeout, unit)) {
-                unparkConsumer();
+        public boolean offer(E e) {
+            if (super.offer(e)) {
+                consumers.forEach(LockSupport::unpark);
                 return true;
             } else {
                 return false;
-            }
-        }
-
-        private void unparkConsumer() {
-            Thread t = consumer;
-            if (t != null) {
-                LockSupport.unpark(t);
             }
         }
 
@@ -291,8 +303,10 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
             while ((e = poll()) == null && ++c < SPINS) {
                 if (Thread.interrupted()) throw new InterruptedException();
             }
-            if (e != null) return e;
-            consumer = Thread.currentThread();
+            if (e != null) {
+                return e;
+            }
+            Node<Thread> us = consumers.putNode(Thread.currentThread());
             try {
                 while (true) {
                     if (Thread.interrupted()) throw new InterruptedException();
@@ -303,7 +317,7 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
                     }
                 }
             } finally {
-                putoConsumer(null);
+                us.puto(null);
             }
         }
 
@@ -316,8 +330,10 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
                 if (Thread.interrupted()) throw new InterruptedException();
                 if (System.nanoTime() >= deadline) return null;
             }
-            if (e != null) return e;
-            consumer = Thread.currentThread();
+            if (e != null) {
+                return e;
+            }
+            Node<Thread> us = consumers.putNode(Thread.currentThread());
             try {
                 while (true) {
                     if (Thread.interrupted()) throw new InterruptedException();
@@ -330,7 +346,7 @@ public class MPMCQueue<E> extends AbstractQueue<E> {
                     }
                 }
             } finally {
-                putoConsumer(null);
+                us.puto(null);
             }
         }
     }

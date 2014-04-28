@@ -48,7 +48,8 @@ final class Node<E> implements Supplier<E> {
 
     Node(E e) {
         if (e == null) throw new NullPointerException();
-        element = e;
+        putv(e);
+        //element = e;
     }
 
     Node() {}
@@ -64,6 +65,15 @@ final class Node<E> implements Supplier<E> {
 
     void puto(E e) { U.putOrderedObject(this, elementOffset, e); }
 
+    void putv(E e) { U.putObjectVolatile(this, elementOffset, e); }
+
+    @SuppressWarnings("unchecked")
+    E gas(E e) { return (E) U.getAndSetObject(this, elementOffset, e); }
+
+    boolean cas(E oldE, E newE) {
+        return U.compareAndSwapObject(this, elementOffset, oldE, newE);
+    }
+
     // next
 
     private volatile Node<E> next;
@@ -74,4 +84,8 @@ final class Node<E> implements Supplier<E> {
     void putvNext(Node<E> n) { next = n; }
 
     void putoNext(Node<E> n) { U.putOrderedObject(this, nextOffset, n); }
+
+    boolean casNext(Node<E> oldN, Node<E> newN) {
+        return U.compareAndSwapObject(this, nextOffset, oldN, newN);
+    }
 }
