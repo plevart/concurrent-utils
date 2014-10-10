@@ -9,7 +9,8 @@ package si.pele.concurrent;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A write-only list that just retains objects added to it.
+ * A write-only linked-list of ever larger arrays that just
+ * retains objects added to it.
  *
  * @author peter
  */
