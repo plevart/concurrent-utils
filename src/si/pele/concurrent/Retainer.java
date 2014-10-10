@@ -6,74 +6,58 @@
  */
 package si.pele.concurrent;
 
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.StampedLock;
 
 /**
  * A write-only list that just retains objects added to it.
  *
  * @author peter
  */
-public final class Retainer extends AtomicInteger {
+public final class Retainer {
 
-    private static final int MAX_ARRAY_LENGTH = Integer.MAX_VALUE - 8;
+    private static final class Chunk extends AtomicInteger {
+        private static final int MIN_CHUNK_SIZE = 2 << 3;
+        private static final int MAX_CHUNK_SIZE = 2 << 30;
 
-    private Object[] array = new Object[16];
+        private final Object[] array;
+        private final Chunk prev;
 
-    private final StampedLock lock = new StampedLock();
+        Chunk(Chunk prev) {
+            this.array = new Object[(prev == null)
+                                    ? MIN_CHUNK_SIZE
+                                    : (prev.array.length == MAX_CHUNK_SIZE)
+                                      ? MAX_CHUNK_SIZE
+                                      : prev.array.length << 1];
+            this.prev = prev;
+        }
+
+        boolean add(Object element) {
+            int i = getAndIncrement();
+            if (i < array.length) {
+                array[i] = element;
+                return true;
+            } else {
+                return false;
+            }
+        }
+    }
+
+    // current chunk
+    private volatile Chunk chunk = new Chunk(null);
 
     public void add(Object element) {
-
-        int i = getAndIncrement();
-
-        if (i >= MAX_ARRAY_LENGTH || i < 0 /* overflow */) {
-            getAndDecrement();
-            throw new OutOfMemoryError("Max. capacity exceeded");
+        Chunk chunk = this.chunk;
+        if (!chunk.add(element)) {
+            addSlow(element);
         }
+    }
 
-        long stamp = lock.tryOptimisticRead();
-        Object[] a = array;
-        if (i < a.length) {
-            a[i] = element;
-            if (lock.validate(stamp)) { // OK, fast-path done
-                return;
-            } else { // some thread is resizing the array - wait for it
-                stamp = lock.readLock();
-                try {
-                    // re-check
-                    a = array;
-                    if (i < a.length) {
-                        a[i] = element;
-                        return;
-                    }
-                } finally {
-                    lock.unlockRead(stamp);
-                }
-            }
-        }
-
-        // resize the array
-        stamp = lock.writeLock();
-        try {
-            // re-check
-            a = array;
-            if (i < a.length) {
-                a[i] = element;
-                return;
-            }
-
-            int newLength = a.length;
-            do {
-                newLength = (newLength < MAX_ARRAY_LENGTH / 2)
-                            ? newLength * 2
-                            : MAX_ARRAY_LENGTH;
-            } while (newLength <= i);
-
-            array = a = Arrays.copyOf(a, newLength);
-            a[i] = element;
-        } finally {
-            lock.unlockWrite(stamp);
+    private synchronized void addSlow(Object element) {
+        Chunk chunk = this.chunk;
+        if (!chunk.add(element)) {
+            Chunk newChunk = new Chunk(chunk);
+            newChunk.add(element);
+            this.chunk = newChunk;
         }
     }
 }
